@@ -15,10 +15,37 @@
   --green: #5f9a7e;       /* muted sage for the main Pack action */
   --green-2: #558d72;
   --warn: #cca257;        /* muted amber */
+  --btn: #23242e;
+  --btn-h: #2c2d39;
+  --btn-ghost-h: rgba(255, 255, 255, .05);
   --radius: 13px;
   --radius-sm: 9px;
   --shadow: 0 6px 20px rgba(0, 0, 0, .28);
   --ring: 0 0 0 3px rgba(111, 131, 172, .26);
+}
+/* light theme (toggled via data-theme on <html>) */
+:root[data-theme="light"] {
+  --bg: #f4f5f8;
+  --card: #ffffff;
+  --card-2: #f8f9fb;
+  --field: #ffffff;
+  --fg: #1b1f27;
+  --muted: #59616d;
+  --muted-2: #899099;
+  --border: #e3e6eb;
+  --border-strong: #ccd1d9;
+  --accent: #5f7098;
+  --accent-2: #566795;
+  --accent-soft: rgba(95, 112, 152, .12);
+  --accent-line: rgba(95, 112, 152, .30);
+  --green: #4f9678;
+  --green-2: #478a6d;
+  --warn: #b0812f;
+  --btn: #eef0f3;
+  --btn-h: #e4e7ec;
+  --btn-ghost-h: rgba(0, 0, 0, .04);
+  --shadow: 0 4px 16px rgba(20, 30, 50, .08);
+  --ring: 0 0 0 3px rgba(95, 112, 152, .22);
 }
 * { box-sizing: border-box; }
 html, body { overflow-x: hidden; }
@@ -32,7 +59,13 @@ body {
 .wrap { max-width: 860px; margin: 0 auto; padding: 22px 18px 48px; }
 
 /* ---------- header ---------- */
-.appbar { display: flex; align-items: center; margin: 4px 2px 18px; }
+.appbar { display: flex; align-items: center; gap: 12px; margin: 4px 2px 18px; }
+.icon-btn {
+  margin-left: auto; flex: none; width: 38px; height: 38px; padding: 0; font-size: 17px;
+  display: grid; place-items: center; border-radius: 10px;
+  background: var(--card-2); border: 1px solid var(--border);
+}
+.icon-btn:hover:not(:disabled) { background: var(--btn-h); }
 .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .logo {
   display: grid; place-items: center; width: 38px; height: 38px; flex: none;
@@ -58,7 +91,7 @@ body {
   text-transform: uppercase; color: var(--muted);
 }
 .count {
-  margin-left: auto; font-size: 12px; font-weight: 600; color: #b9c2d8;
+  margin-left: auto; font-size: 12px; font-weight: 600; color: var(--accent);
   background: var(--accent-soft); border: 1px solid var(--accent-line);
   padding: 2px 10px; border-radius: 999px;
 }
@@ -81,18 +114,18 @@ input[type="text"] {
 }
 input[type="text"]::placeholder { color: var(--muted-2); }
 input[type="text"]:hover { border-color: var(--border-strong); }
-input[type="text"]:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); background: #16171e; }
+input[type="text"]:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); background: var(--field); }
 .url-row input { flex: 1; }
 
 /* ---------- buttons ---------- */
 button {
   flex: none;
-  background: #23242e; color: var(--fg);
+  background: var(--btn); color: var(--fg);
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   padding: 9px 15px; font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
   transition: background .15s, border-color .15s, transform .05s, box-shadow .15s, opacity .15s;
 }
-button:hover:not(:disabled) { background: #2c2d39; border-color: #474b5e; }
+button:hover:not(:disabled) { background: var(--btn-h); border-color: var(--border-strong); }
 button:active:not(:disabled) { transform: translateY(1px); }
 button:disabled { opacity: .45; cursor: default; }
 button.primary {
@@ -106,8 +139,8 @@ button.accent {
 }
 button.accent:hover:not(:disabled) { background: var(--green); border-color: rgba(95, 154, 126, .55); }
 button.ghost { background: transparent; border-color: var(--border-strong); color: var(--muted); font-weight: 500; }
-button.ghost:hover:not(:disabled) { background: rgba(255,255,255,.04); color: var(--fg); }
-button.warn { color: #f0dcae; border-color: rgba(204,162,87,.45); background: rgba(204,162,87,.14); font-weight: 600; }
+button.ghost:hover:not(:disabled) { background: var(--btn-ghost-h); color: var(--fg); }
+button.warn { color: var(--warn); border-color: rgba(204,162,87,.45); background: rgba(204,162,87,.14); font-weight: 600; }
 button.warn:hover:not(:disabled) { background: rgba(204,162,87,.22); }
 button.sm { padding: 6px 11px; font-size: 12.5px; }
 
@@ -162,7 +195,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 
 /* ---------- resume banner ---------- */
 .resume { display: flex; align-items: center; gap: 12px; border-color: var(--accent-line); }
-.resume-ico { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 8px; background: var(--accent-soft); color: #b9c2d8; font-size: 16px; }
+.resume-ico { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 16px; }
 .resume-msg { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
 
 /* ---------- captcha ---------- */
@@ -196,11 +229,17 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 }
 .tablehead .inc { width: 76px; flex: none; }
 .list { max-height: 430px; overflow-y: auto; overflow-x: hidden; margin-top: 2px; }
-.item { display: flex; align-items: center; padding: 8px 6px; border-bottom: 1px solid #23242d; border-radius: 8px; }
-.item:hover { background: rgba(255,255,255,.03); }
+.item { display: flex; align-items: center; padding: 8px 6px; border-bottom: 1px solid var(--border); border-radius: 8px; }
+.item:hover { background: var(--accent-soft); }
 .item .inc { width: 76px; flex: none; display: flex; justify-content: center; }
 .item .inc input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
 .item .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+/* per-chapter status dot */
+.st { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 9px; background: var(--border-strong); vertical-align: middle; flex: none; }
+.st.ok { background: var(--green); }
+.st.fail { background: var(--warn); }
+.st.loading { background: var(--accent); animation: stpulse 1s ease-in-out infinite; }
+@keyframes stpulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
 
 /* scrollbar */
 .list::-webkit-scrollbar { width: 10px; }

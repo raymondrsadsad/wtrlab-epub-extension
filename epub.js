@@ -138,7 +138,12 @@ h1{font-size:1.35em;line-height:1.3;margin:0 0 1em;text-align:left}
 p{margin:0 0 .9em;text-align:justify;-webkit-hyphens:auto;hyphens:auto}
 img{max-width:100%;height:auto;display:block;margin:1.2em auto}
 .cover{margin:0;padding:0;height:100%;text-align:center}
-.cover img{max-width:100%;max-height:100vh;height:auto;margin:0 auto}`,
+.cover img{max-width:100%;max-height:100vh;height:auto;margin:0 auto}
+.titlepage{text-align:center;margin-top:22%}
+.titlepage .bt{font-size:1.7em;line-height:1.25;margin:0 .6em .4em}
+.titlepage .ba{font-size:1.05em;color:#555;font-style:italic;margin:0 0 1.6em}
+.synopsis{text-align:left;margin:1.5em 1.2em 0;color:#333;font-size:.95em}
+.synopsis p{text-indent:1.2em;margin:0 0 .6em}`,
   });
 
   // cover (image metadata + a real cover page so the book opens on it)
@@ -159,6 +164,19 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
     coverPageItem = `<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>`;
     coverPageRef = `<itemref idref="coverpage"/>`;
   }
+
+  // title page (title + author + optional synopsis)
+  const descHtml = meta.description ? `<div class="synopsis">${meta.description.split(/\n+/).map((p) => `<p>${xmlEscape(p)}</p>`).join("")}</div>` : "";
+  files.push({
+    name: "OEBPS/title.xhtml",
+    data: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
+<head><meta charset="utf-8"/><title>${xmlEscape(meta.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
+<body class="titlepage" epub:type="titlepage"><h1 class="bt">${xmlEscape(meta.title)}</h1><p class="ba">${xmlEscape(meta.author || "Unknown")}</p>${descHtml}</body></html>`,
+  });
+  const titlePageItem = `<item id="titlepage" href="title.xhtml" media-type="application/xhtml+xml"/>`;
+  const titlePageRef = `<itemref idref="titlepage"/>`;
 
   // images
   const imageItems = [];
@@ -221,6 +239,8 @@ ${ch.xhtmlBody}
     <dc:title>${xmlEscape(meta.title)}</dc:title>
     <dc:language>${lang}</dc:language>
     <dc:creator>${xmlEscape(meta.author || "Unknown")}</dc:creator>
+    ${meta.description ? `<dc:description>${xmlEscape(meta.description)}</dc:description>` : ""}
+    ${(meta.subjects || []).map((s) => `<dc:subject>${xmlEscape(s)}</dc:subject>`).join("\n    ")}
     <meta property="dcterms:modified">${modified}</meta>
     ${coverMeta}
   </metadata>
@@ -230,11 +250,13 @@ ${ch.xhtmlBody}
     <item id="css" href="style.css" media-type="text/css"/>
     ${coverImageItem}
     ${coverPageItem}
+    ${titlePageItem}
     ${imageItems.join("\n    ")}
     ${chapItems.join("\n    ")}
   </manifest>
   <spine toc="ncx">
     ${coverPageRef}
+    ${titlePageRef}
     ${chapRefs.join("\n    ")}
   </spine>
 </package>`,

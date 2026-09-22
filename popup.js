@@ -31,6 +31,10 @@ const S = {
   lastName: null,
   prefService: null,  // remembered translation mode from last session
   failed: new Set(),  // indices whose fetch failed (stubbed) — retryable
+  cancel: false,      // Stop button pressed
+  counts: {},         // url -> chapter count at last pack (for "new since" detection)
+  newFrom: null,      // index from which chapters are "new" this analyse
+  currentUrl: null,   // url of the analysed novel
 };
 
 // ---------- persistence (settings + resume) ----------
@@ -43,6 +47,7 @@ function savePrefs() {
       lang: ($("language").value || "").trim(),
       autoClose: $("capAutoClose") ? $("capAutoClose").checked : true,
       parallel: $("parallel") ? $("parallel").checked : false,
+      theme: document.documentElement.getAttribute("data-theme") || "dark",
     }});
   } catch (e) { /* ignore */ }
 }
@@ -116,6 +121,25 @@ function updateCoverPreview() {
   else { img.removeAttribute("src"); img.classList.add("hidden"); }
 }
 
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme === "light" ? "light" : "dark");
+  const btn = $("themeToggle");
+  if (btn) btn.textContent = theme === "light" ? "☀️" : "🌙";
+}
+
+// Per-chapter status dot in the list: '', 'loading', 'ok', 'fail'.
+function setRowStatus(idx, state) {
+  const cb = document.querySelector(`#list .item input[data-i="${idx}"]`);
+  if (!cb) return;
+  const dot = cb.closest(".item").querySelector(".st");
+  if (dot) dot.className = "st" + (state ? " " + state : "");
+}
+function resetRowDots() {
+  for (const q of S.queue) {
+    setRowStatus(q.index, S.results[q.index] ? (S.failed.has(q.index) ? "fail" : "ok") : "");
+  }
+}
+
 // ---------- analyse ----------
 async function analyse() {
   const url = $("url").value.trim();
@@ -126,6 +150,7 @@ async function analyse() {
     S.adapter = pickAdapter(url);
     const meta = await S.adapter.getMeta(url);
     S.meta = meta;
+    S.currentUrl = url;
     S.chapters = meta.chapters;
     $("title").value = meta.title || "";
     $("author").value = meta.author || "";
@@ -144,7 +169,17 @@ async function analyse() {
     renderList();
     $("pack").disabled = false;
     addRecent(url, meta.title);
-    setStatus(`Loaded ${S.chapters.length} chapters via "${S.adapter.label}" adapter.`);
+    // new-chapter detection vs. the count at last pack of this novel
+    const prev = S.counts[url];
+    if (prev != null && S.chapters.length > prev) {
+      S.newFrom = prev; // 0-based: chapters from this index on are new
+      $("selNew").classList.remove("hidden");
+      setStatus(`Loaded ${S.chapters.length} chapters — ${S.chapters.length - prev} new since last pack. “Select new” to grab just those.`);
+    } else {
+      S.newFrom = null;
+      $("selNew").classList.add("hidden");
+      setStatus(`Loaded ${S.chapters.length} chapters via "${S.adapter.label}" adapter.`);
+    }
   } catch (e) {
     console.error(e);
     setStatus("Analyse failed: " + e.message);
@@ -202,7 +237,7 @@ function renderList() {
   S.chapters.forEach((c, i) => {
     const row = document.createElement("div");
     row.className = "item";
-    row.innerHTML = `<span class="inc"><input type="checkbox" data-i="${i}" checked></span><span class="ttl">${escapeHtml(c.title || "Chapter " + (i + 1))}</span>`;
+    row.innerHTML = `<span class="inc"><input type="checkbox" data-i="${i}" checked></span><span class="ttl"><span class="st"></span>${escapeHtml(c.title || "Chapter " + (i + 1))}</span>`;
     list.appendChild(row);
   });
   if ($("filter")) $("filter").value = "";
@@ -301,6 +336,7 @@ async function startPack() {
   S.imgCache = {};
   S.imgN = 0;
   S.failed = new Set();
+  S.cancel = false;
   stopResumePoll();
   await runPack();
 }
@@ -351,10 +387,13 @@ function fmtEta(ms) {
 async function runPack() {
   if (S.running) return;
   S.running = true;
+  S.cancel = false;
   $("pack").disabled = true;
   $("download").classList.add("hidden");   // stale until the (re)build finishes
   $("retryFailed").classList.add("hidden");
+  $("stop").classList.remove("hidden");
   hideCaptcha();
+  resetRowDots();
   const conc = ($("parallel") && $("parallel").checked) ? 3 : 1;
   const delay = S.adapter.id === "wtrlab" ? 1200 : 400;
   const opts = { service: S.service, lang: $("language").value.trim() || "en" };
@@ -377,7 +416,7 @@ async function runPack() {
   };
 
   async function worker() {
-    while (S.running && !paused) {
+    while (S.running && !paused && !S.cancel) {
       // claim the next not-yet-fetched queue entry (synchronous → race-free)
       let claim = null;
       while (cursor < total) {
@@ -386,14 +425,17 @@ async function runPack() {
       }
       if (!claim) return;
       const idx = claim.index;
+      setRowStatus(idx, "loading");
       try {
         S.results[idx] = await S.adapter.getChapter(claim.chapter, opts);
         S.failed.delete(idx);
+        setRowStatus(idx, "ok");
       } catch (e) {
-        if (e.name === "CaptchaError") { paused = true; return; }
+        if (e.name === "CaptchaError") { paused = true; setRowStatus(idx, ""); return; }
         console.error("chapter failed", idx, e);
         S.results[idx] = { title: (S.chapters[idx] && S.chapters[idx].title) || `Chapter ${idx + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
         S.failed.add(idx);
+        setRowStatus(idx, "fail");
       }
       fetchedThisRun++;
       tick();
@@ -405,6 +447,15 @@ async function runPack() {
   try {
     tick();
     await Promise.all(Array.from({ length: conc }, () => worker()));
+    if (S.cancel) {
+      S.running = false;
+      $("pack").disabled = false;
+      saveResume();
+      const done = packDone();
+      if (done > 0) $("update").classList.remove("hidden");
+      setStatus(`Stopped at ${done} / ${total}. “Update EPUB” to build/continue, or Pack to restart.`);
+      return;
+    }
     if (paused) {
       S.running = false;
       S.qpos = firstUndonePos();
@@ -415,6 +466,7 @@ async function runPack() {
     }
     await finishPack();
   } finally {
+    $("stop").classList.add("hidden");
     if (S.running) { S.running = false; $("pack").disabled = false; }
   }
 }
@@ -447,6 +499,8 @@ async function finishPack() {
     title: $("title").value.trim() || "Untitled",
     author: $("author").value.trim() || "Unknown",
     language: $("language").value.trim() || "en",
+    description: (S.meta && S.meta.description) || "",
+    subjects: (S.meta && S.meta.subjects) || [],
     cover,
   };
   const blob = buildEpub(meta, chapters, images);
@@ -456,9 +510,15 @@ async function finishPack() {
   S.lastName = fname;
   S.running = false;
   $("pack").disabled = false;
+  $("stop").classList.add("hidden");
   $("download").classList.remove("hidden");
   $("update").classList.remove("hidden");
   clearResume(); // this run is complete
+  // record the chapter count so a later analyse can flag newly-released chapters
+  if (store && S.currentUrl) {
+    S.counts[S.currentUrl] = S.chapters.length;
+    try { store.set({ counts: S.counts }); } catch (e) {}
+  }
   const failN = S.failed.size;
   if (failN) {
     $("retryFailed").textContent = `Retry ${failN} failed`;
@@ -518,15 +578,17 @@ function loadPrefsAndResume() {
   return new Promise((resolve) => {
     if (!store) { resolve(); return; }
     try {
-      store.get(["prefs", "resume", "recent"], (o) => {
+      store.get(["prefs", "resume", "recent", "counts"], (o) => {
         const p = o && o.prefs;
         if (p) {
           S.prefService = p.service || null;
           if (p.lang) $("language").value = p.lang;
           if (typeof p.autoClose === "boolean" && $("capAutoClose")) $("capAutoClose").checked = p.autoClose;
           if (typeof p.parallel === "boolean" && $("parallel")) $("parallel").checked = p.parallel;
+          applyTheme(p.theme === "light" ? "light" : "dark");
         }
         if (o && Array.isArray(o.recent)) renderRecent(o.recent);
+        if (o && o.counts && typeof o.counts === "object") S.counts = o.counts;
         const r = o && o.resume;
         const total = r && (r.total || (r.selected ? r.selected.length : 0));
         if (r && r.selected && r.selected.length && (r.qpos || 0) < total) {
@@ -647,9 +709,19 @@ async function init() {
     if (!/INPUT|SELECT|TEXTAREA|BUTTON/.test(tag)) { e.preventDefault(); doDownload(); }
   });
   $("pack").addEventListener("click", startPack);
+  $("stop").addEventListener("click", () => { S.cancel = true; setStatus("Stopping…"); });
   $("update").addEventListener("click", updatePack);
   $("retryFailed").addEventListener("click", retryFailed);
   $("download").addEventListener("click", doDownload);
+  $("themeToggle").addEventListener("click", () => {
+    const now = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    applyTheme(now); savePrefs();
+  });
+  $("selNew").addEventListener("click", () => {
+    if (S.newFrom == null) return;
+    document.querySelectorAll("#list .item input").forEach((cb) => { cb.checked = (+cb.dataset.i) >= S.newFrom; });
+    updateSelInfo();
+  });
   $("recent").addEventListener("change", (e) => {
     const v = e.target.value; if (!v) return;
     $("url").value = v; e.target.value = ""; analyse();

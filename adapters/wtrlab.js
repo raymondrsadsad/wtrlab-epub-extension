@@ -110,6 +110,24 @@ function cleanTitle(s) {
     .trim();
 }
 
+// Collect genre/tag strings from whichever fields the page data happens to use.
+function collectSubjects(...objs) {
+  const out = [];
+  const push = (v) => {
+    if (v == null) return;
+    if (Array.isArray(v)) v.forEach(push);
+    else if (typeof v === "string") { const t = cleanTitle(v); if (t) out.push(t); }
+    else if (typeof v === "object") push(v.name || v.title || v.genre || v.tag || v.label);
+  };
+  const KEYS = ["genres", "genre", "tags", "tag", "categories", "category"];
+  for (const o of objs) {
+    if (!o || typeof o !== "object") continue;
+    for (const k of KEYS) if (o[k] != null) push(o[k]);
+    if (o.data && typeof o.data === "object") for (const k of KEYS) if (o.data[k] != null) push(o.data[k]);
+  }
+  return [...new Set(out)].slice(0, 20);
+}
+
 // Fetch real chapter titles from wtr-lab's own chapter-list API so the tool can
 // list "#1 Douluo Diary: Bibi Dong Breaks Down" instead of a fabricated
 // "Chapter 1". The endpoint keys on the numeric id in the /novel/<id>/ URL
@@ -220,6 +238,9 @@ export function create() {
         language: "en",
         cover: sd.data.image || null,
         slug: sd.slug,
+        description: cleanTitle(sd.data.description || sd.description || "") || "",
+        subjects: collectSubjects(sd, data.props.pageProps.serie),
+        chapterCount: count,
         chapters,
       };
     },

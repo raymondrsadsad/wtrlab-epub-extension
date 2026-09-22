@@ -22,6 +22,7 @@
           <div class="brand-sub">wtr-lab · Web / Web+ / AI</div>
         </div>
       </div>
+      <button id="themeToggle" class="icon-btn" title="Toggle light / dark" aria-label="Toggle theme">🌙</button>
     </header>
 
     <section class="card">
@@ -64,6 +65,7 @@
     <section class="card packbox">
       <div class="packbtns">
         <button id="pack" class="accent" disabled>Pack EPUB</button>
+        <button id="stop" class="warn hidden">Stop</button>
         <button id="update" class="hidden">Update EPUB</button>
         <button id="retryFailed" class="warn hidden">Retry failed</button>
         <button id="download" class="primary hidden">⬇ Download EPUB</button>
@@ -91,6 +93,7 @@
         <label>Last</label>
         <select id="last"></select>
         <span class="range-spacer"></span>
+        <button id="selNew" class="ghost sm hidden">Select new</button>
         <button id="selAll" class="ghost sm">Select all</button>
         <button id="selNone" class="ghost sm">Clear</button>
       </div>
