@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4 — 2026-09-23
+
+### Added
+- **Chapter filter.** A filter box live-filters the list by title; **Check
+  matches / Uncheck matches** bulk-toggle whatever is shown, and **Exclude
+  extras** unchecks side stories in one click (extra, side story, omake, bonus,
+  interlude, afterword, 番外, 外传, SS). A live "X shown · Y/Z selected" counter
+  keeps the tally. Filtering only affects the view — your checkboxes still decide
+  what gets packed.
+
+### Changed
+- **Calmer palette.** Replaced the bright violet/green and glow effects with a
+  muted slate-blue accent, a soft sage Pack button, flat fills, and gentler
+  shadows — easier on the eyes.
+
 ## 1.3.1 — 2026-09-23
 
 ### Fixed

@@ -159,6 +159,7 @@ function renderRange() {
     document.querySelectorAll(".item input").forEach((cb) => {
       const i = +cb.dataset.i; cb.checked = i >= Math.min(a, b) && i <= Math.max(a, b);
     });
+    updateSelInfo();
   };
   first.onchange = applyRange;
   last.onchange = applyRange;
@@ -173,9 +174,58 @@ function renderList() {
     row.innerHTML = `<span class="inc"><input type="checkbox" data-i="${i}" checked></span><span class="ttl">${escapeHtml(c.title || "Chapter " + (i + 1))}</span>`;
     list.appendChild(row);
   });
+  if ($("filter")) $("filter").value = "";
+  updateSelInfo();
 }
 function selectedIndices() {
   return Array.from(document.querySelectorAll(".item input:checked")).map((cb) => +cb.dataset.i);
+}
+
+// ---------- chapter filter ----------
+// Titles that are side stories / extras rather than the main run.
+const EXTRA_RE = /\b(extra|extras|side[\s-]?story|sidestory|omake|bonus|interlude|afterword|ss)\b|番外|外传|外傳/i;
+
+function chapterTitleAt(i) { return (S.chapters[i] && S.chapters[i].title) || ""; }
+
+// Live-hide rows whose title doesn't contain the filter text (view only —
+// checkbox state, which drives packing, is left untouched).
+function filterRows() {
+  const q = ($("filter").value || "").trim().toLowerCase();
+  document.querySelectorAll("#list .item").forEach((row) => {
+    const i = +row.querySelector("input").dataset.i;
+    const match = !q || chapterTitleAt(i).toLowerCase().includes(q);
+    row.classList.toggle("hidden", !match);
+  });
+  updateSelInfo();
+}
+
+// Check/uncheck every row currently visible under the filter.
+function setChecksForShown(state) {
+  document.querySelectorAll("#list .item").forEach((row) => {
+    if (!row.classList.contains("hidden")) row.querySelector("input").checked = state;
+  });
+  updateSelInfo();
+}
+
+function excludeExtras() {
+  let n = 0;
+  document.querySelectorAll("#list .item input").forEach((cb) => {
+    if (EXTRA_RE.test(chapterTitleAt(+cb.dataset.i))) { cb.checked = false; n++; }
+  });
+  setStatus(n ? `Excluded ${n} extra/side chapter${n === 1 ? "" : "s"}.` : "No extra/side chapters found.");
+  updateSelInfo();
+}
+
+function updateSelInfo() {
+  const el = $("selInfo");
+  if (!el) return;
+  const rows = document.querySelectorAll("#list .item");
+  let shown = 0, sel = 0;
+  rows.forEach((r) => {
+    if (!r.classList.contains("hidden")) shown++;
+    if (r.querySelector("input").checked) sel++;
+  });
+  el.textContent = rows.length ? `${shown} shown · ${sel}/${rows.length} selected` : "";
 }
 
 // ---------- images ----------
@@ -494,8 +544,13 @@ async function init() {
     cp.onerror = () => cp.classList.add("hidden");
     cp.addEventListener("click", () => cp.classList.toggle("zoomed")); // click to enlarge/shrink
   }
-  $("selAll").addEventListener("click", () => document.querySelectorAll(".item input").forEach((c) => (c.checked = true)));
-  $("selNone").addEventListener("click", () => document.querySelectorAll(".item input").forEach((c) => (c.checked = false)));
+  $("selAll").addEventListener("click", () => { document.querySelectorAll(".item input").forEach((c) => (c.checked = true)); updateSelInfo(); });
+  $("selNone").addEventListener("click", () => { document.querySelectorAll(".item input").forEach((c) => (c.checked = false)); updateSelInfo(); });
+  $("filter").addEventListener("input", filterRows);
+  $("filterCheck").addEventListener("click", () => setChecksForShown(true));
+  $("filterUncheck").addEventListener("click", () => setChecksForShown(false));
+  $("excludeExtras").addEventListener("click", excludeExtras);
+  $("list").addEventListener("change", updateSelInfo);
 
   $("capOpen").addEventListener("click", () => {
     const u = captchaUrl();
