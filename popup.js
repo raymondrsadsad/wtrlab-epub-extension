@@ -1,4 +1,4 @@
-import { pickAdapter } from "./adapters/registry.js";
+import { pickAdapter, adapterById } from "./adapters/registry.js";
 import { buildEpub } from "./epub.js";
 
 const $ = (id) => document.getElementById(id);
@@ -147,7 +147,8 @@ async function analyse() {
   $("analyse").disabled = true;
   setStatus("Analysing…");
   try {
-    S.adapter = pickAdapter(url);
+    const ov = ($("adapter") && $("adapter").value) || "auto";
+    S.adapter = ov === "auto" ? pickAdapter(url) : adapterById(ov, url);
     const meta = await S.adapter.getMeta(url);
     S.meta = meta;
     S.currentUrl = url;
@@ -168,6 +169,7 @@ async function analyse() {
     renderRange();
     renderList();
     $("pack").disabled = false;
+    $("reverse").classList.remove("hidden");
     addRecent(url, meta.title);
     // new-chapter detection vs. the count at last pack of this novel
     const prev = S.counts[url];
@@ -245,6 +247,20 @@ function renderList() {
 }
 function selectedIndices() {
   return Array.from(document.querySelectorAll(".item input:checked")).map((cb) => +cb.dataset.i);
+}
+
+// Flip chapter order (useful for generic TOCs listed newest-first). Resets any
+// in-progress run since results are keyed by the old indices.
+function reverseChapters() {
+  if (!S.chapters.length) return;
+  S.chapters.reverse();
+  S.queue = []; S.qpos = 0; S.results = {}; S.imgCache = {}; S.imgN = 0; S.failed = new Set();
+  $("download").classList.add("hidden");
+  $("update").classList.add("hidden");
+  $("retryFailed").classList.add("hidden");
+  renderRange();
+  renderList();
+  setStatus(`Reversed — ${S.chapters.length} chapters.`);
 }
 
 // ---------- chapter filter ----------
@@ -737,6 +753,7 @@ async function init() {
   }
   $("selAll").addEventListener("click", () => { document.querySelectorAll(".item input").forEach((c) => (c.checked = true)); updateSelInfo(); });
   $("selNone").addEventListener("click", () => { document.querySelectorAll(".item input").forEach((c) => (c.checked = false)); updateSelInfo(); });
+  $("reverse").addEventListener("click", reverseChapters);
   $("filter").addEventListener("input", filterRows);
   $("filterCheck").addEventListener("click", () => setChecksForShown(true));
   $("filterUncheck").addEventListener("click", () => setChecksForShown(false));

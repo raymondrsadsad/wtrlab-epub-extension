@@ -38,6 +38,15 @@
         <select id="recent"><option value="">Recent novels…</option></select>
       </div>
 
+      <div class="row">
+        <label>Adapter</label>
+        <select id="adapter">
+          <option value="auto">Auto-detect</option>
+          <option value="wtrlab">wtr-lab</option>
+          <option value="generic">Generic (any site)</option>
+        </select>
+      </div>
+
       <div class="row"><label>Title</label><input id="title" type="text" /></div>
       <div class="row"><label>Author</label><input id="author" type="text" /></div>
       <div class="row"><label>Language</label><input id="language" type="text" value="en" /></div>
@@ -96,6 +105,7 @@
         <button id="selNew" class="ghost sm hidden">Select new</button>
         <button id="selAll" class="ghost sm">Select all</button>
         <button id="selNone" class="ghost sm">Clear</button>
+        <button id="reverse" class="ghost sm hidden">Reverse</button>
       </div>
       <div class="filter">
         <input id="filter" type="text" placeholder="Filter titles… e.g. extra, side, a character name" />

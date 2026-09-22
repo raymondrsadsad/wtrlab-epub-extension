@@ -45,6 +45,18 @@ scripts/pack-zip.sh          # → dist/novel-to-epub-<version>.zip
 
 Send that zip; the recipient unzips it and does **Load unpacked** on the folder.
 
+## Other sites (generic extractor)
+Any non-wtr-lab novel works through the built-in **Generic** extractor — the same
+workflow applies (filter, Exclude extras, status dots, Retry, Stop, Update,
+Resume, new-chapter detection, EPUB polish). It also:
+- finds the chapter list, **sorts by chapter number**, and prefers the real table
+  of contents (use **Reverse** if a site lists newest-first and numbers are absent);
+- offers **Original** or **Translate → English** in the Translation selector;
+- pauses on a Cloudflare check just like wtr-lab (Open CAPTCHA → auto-resume).
+
+Use the **Adapter** dropdown to force **Generic** or **wtr-lab** if auto-detect
+picks the wrong one.
+
 ## Adding another site later
 Drop `adapters/<site>.js` exporting `create()` (implementing `matches`,
 `getMeta`, `options`, `getChapter` like `adapters/wtrlab.js`) and register it in

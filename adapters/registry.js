@@ -5,6 +5,7 @@ import { create as createWtrlab } from "./wtrlab.js";
 import { create as createGeneric } from "./generic.js";
 
 const SITE_ADAPTERS = [createWtrlab];
+const BY_ID = { wtrlab: createWtrlab, generic: createGeneric };
 
 export function pickAdapter(url) {
   for (const factory of SITE_ADAPTERS) {
@@ -12,4 +13,10 @@ export function pickAdapter(url) {
     try { if (a.matches(url)) return a; } catch {}
   }
   return createGeneric();
+}
+
+// Force a specific adapter by id ("wtrlab" | "generic"); falls back to auto.
+export function adapterById(id, url) {
+  const factory = BY_ID[id];
+  return factory ? factory() : pickAdapter(url);
 }

@@ -1,8 +1,8 @@
 // wtr-lab.com adapter: full support for Web / Web+ / AI, exact illustrations.
+import { translateAll } from "./translate.js";
+
 const API = "https://wtr-lab.com/api/reader/get";
 const TERMS = (id) => `https://wtr-lab.com/api/v2/reader/terms/${id}.json`;
-const TRANSLATE = "https://translate-pa.googleapis.com/v1/translateHtml";
-const GKEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
 const DEC_KEY = "IJAFUUxjM25hyzL2AZrn0wl7cESED6Ru";
 const IMG_RE = /^\s*\[\s*image\s*\]\s*$/i;
 
@@ -33,48 +33,6 @@ async function decryptBody(body) {
   const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await decKey(), combined);
   const txt = td.decode(pt);
   return isArr ? JSON.parse(txt) : txt;
-}
-
-// HTML entity decode (google translateHtml returns &#39; etc.)
-let _decoderEl = null;
-function htmlUnescape(s) {
-  if (!s || s.indexOf("&") === -1) return s;
-  if (!_decoderEl) _decoderEl = document.createElement("textarea");
-  _decoderEl.innerHTML = s;
-  return _decoderEl.value;
-}
-
-async function translateBatch(paras, to, from) {
-  const res = await fetchT(TRANSLATE, {
-    method: "POST",
-    headers: { "content-type": "application/json+protobuf", "X-Goog-API-Key": GKEY },
-    body: JSON.stringify([[paras, from, to], "te_lib"]),
-  });
-  if (!res.ok) throw new Error("translate HTTP " + res.status);
-  const j = await res.json();
-  const list = Array.isArray(j) && Array.isArray(j[0]) ? j[0] : null;
-  if (list && list.length === paras.length) return list.map(htmlUnescape);
-  // fallback: one at a time to preserve alignment
-  if (paras.length > 1) {
-    const out = [];
-    for (const p of paras) out.push((await translateBatch([p], to, from))[0]);
-    return out;
-  }
-  return list ? list.map(htmlUnescape) : paras;
-}
-async function translateAll(paras, to = "en", from = "zh-CN", batchChars = 4000) {
-  const out = [];
-  let i = 0;
-  while (i < paras.length) {
-    const batch = [];
-    let size = 0;
-    while (i < paras.length && (batch.length === 0 || size + paras[i].length <= batchChars)) {
-      batch.push(paras[i]); size += paras[i].length + 1; i++;
-    }
-    const r = await translateBatch(batch, to, from);
-    for (const x of r) out.push(x);
-  }
-  return out;
 }
 
 function resolveAi(paras, glossaryData) {

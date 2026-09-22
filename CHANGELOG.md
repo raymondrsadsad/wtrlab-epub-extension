@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.7 — 2026-09-23
+
+### Added
+- **Full experience on other sites.** The generic extractor now feeds the same
+  workflow as wtr-lab (filter, exclude extras, status dots, retry, stop, update,
+  resume, new-chapter detection, EPUB polish).
+- **Adapter dropdown** — Auto-detect (default), or force wtr-lab / Generic.
+- **Smarter generic chapter list** — dedupes links, keeps the real table of
+  contents, extracts chapter numbers and **sorts ascending** (fixes newest-first
+  sites), and reports a count for new-chapter detection.
+- **Generic translation** — Original, or **Translate → English** (auto source
+  language), sharing wtr-lab's translation engine.
+- **Cloudflare handling for generic sites** — pauses on a challenge and
+  auto-resumes, same as wtr-lab.
+- **Reverse** button — flip chapter order when a site lists newest-first.
+
+### Changed
+- Better generic content extraction (link-density penalty, more lazy-image
+  attributes) and metadata (description, genres).
+- Translation helpers moved to a shared `adapters/translate.js` (no behaviour
+  change for wtr-lab).
+
 ## 1.6 — 2026-09-23
 
 ### Added
