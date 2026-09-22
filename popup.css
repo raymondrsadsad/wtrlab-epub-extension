@@ -118,7 +118,9 @@ select {
 }
 select:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
 #recent { flex: 1; min-width: 0; }
-.opt { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-size: 13px; cursor: pointer; }
+/* override the fixed-width .row label sizing (the Options control is a <label>) */
+.row label.opt { width: auto; text-align: left; flex: 1; min-width: 0; }
+.opt { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-size: 13px; font-weight: 500; cursor: pointer; }
 .opt input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
 .opt em { color: var(--muted-2); font-style: normal; }
 
