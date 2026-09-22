@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Novel to EPUB</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="row">
+        <label>Starting URL</label>
+        <input id="url" type="text" placeholder="Paste a novel or chapter URL" />
+        <button id="analyse">Load and Analyse</button>
+      </div>
+      <div class="row"><label>Title</label><input id="title" type="text" /></div>
+      <div class="row"><label>Author</label><input id="author" type="text" /></div>
+      <div class="row"><label>Language</label><input id="language" type="text" value="en" /></div>
+      <div class="row"><label>Filename</label><input id="filename" type="text" /></div>
+      <div class="row"><label>Cover Image URL</label><input id="cover" type="text" /></div>
+
+      <div id="modeRow" class="row hidden">
+        <label>Translation</label>
+        <div id="modes" class="modes"></div>
+      </div>
+    </div>
+
+    <div class="card packbox">
+      <button id="pack" disabled>Pack EPUB</button>
+      <div class="progress"><div id="bar"></div></div>
+      <div id="status" class="status">Load and analyse a novel to begin.</div>
+    </div>
+
+    <div id="captcha" class="card captcha hidden">
+      <div class="cap-title">⚠️ The site is asking for a CAPTCHA / verification.</div>
+      <div class="cap-msg">Open the page below, complete the check, then click Retry. Your progress is kept.</div>
+      <div class="cap-btns">
+        <button id="capOpen">Open CAPTCHA page</button>
+        <button id="capCopy">Copy link</button>
+        <button id="capRetry" class="primary">Retry</button>
+      </div>
+      <label class="cap-opt"><input id="capAutoClose" type="checkbox" checked /> Close the CAPTCHA tab and return here after it's solved</label>
+    </div>
+
+    <div class="card">
+      <div class="range">
+        <label>First</label>
+        <select id="first"></select>
+        <label>Last</label>
+        <select id="last"></select>
+        <button id="selAll">Select All</button>
+        <button id="selNone">Unselect All</button>
+        <span id="count" class="count">Chapter Count: 0</span>
+      </div>
+      <div class="tablehead"><span class="inc">Include?</span><span class="ttl">Title</span></div>
+      <div id="list" class="list"></div>
+    </div>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
