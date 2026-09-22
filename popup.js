@@ -714,17 +714,19 @@ async function init() {
   // Remember our own tab so we can return focus here after a CAPTCHA solve.
   chrome.tabs.getCurrent((t) => { if (t) { toolTabId = t.id; toolWinId = t.windowId; } });
 
+  // Hosts we auto-analyse on when the extension is opened from one of their pages.
+  const AUTO_HOSTS = ["wtr-lab.com", "genesistudio.com"];
   const params = new URLSearchParams(location.search);
   const src = params.get("src");
-  let autoWtr = false;
+  let autoAnalyse = false;
   if (src) {
     let u = src;
     try {
-      if (new URL(src).hostname.endsWith("wtr-lab.com")) {
-        // Normalize a chapter reader URL back to the novel page, and remember
-        // to auto-analyse it so opening the extension on the site just works.
-        u = src.replace(/\/chapter-\d+\/?(?:[?#].*)?$/i, "");
-        autoWtr = true;
+      const host = new URL(src).hostname;
+      if (AUTO_HOSTS.some((h) => host === h || host.endsWith("." + h))) {
+        autoAnalyse = true;
+        // wtr-lab: normalise a chapter reader URL back to the novel page.
+        if (host.endsWith("wtr-lab.com")) u = src.replace(/\/chapter-\d+\/?(?:[?#].*)?$/i, "");
       }
     } catch {}
     $("url").value = u;
@@ -786,6 +788,6 @@ async function init() {
   await loadPrefsAndResume();
 
   // Opened the extension while on wtr-lab → load & analyse the novel right away.
-  if (autoWtr) analyse();
+  if (autoAnalyse) analyse();
 }
 init();

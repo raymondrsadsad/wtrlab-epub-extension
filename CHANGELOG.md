@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.2 — 2026-09-23
+
+### Added
+- Auto-analyse also on **genesistudio.com** when you open the extension there
+  (host list is easy to extend).
+
+
 ## 1.7.1 — 2026-09-23
 
 ### Fixed
