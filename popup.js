@@ -153,7 +153,7 @@ function renderRange() {
   });
   first.value = "0";
   last.value = String(S.chapters.length - 1);
-  $("count").textContent = "Chapter Count: " + S.chapters.length;
+  $("count").textContent = String(S.chapters.length);
   const applyRange = () => {
     const a = +first.value, b = +last.value;
     document.querySelectorAll(".item input").forEach((cb) => {

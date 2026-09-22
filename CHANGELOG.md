@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3 — 2026-09-23
+
+### Changed
+- **Modern UI redesign.** New header/brand bar, elevated cards with section
+  headings, a segmented Web / Web+ / AI control, gradient primary/accent buttons,
+  a sleeker progress bar, a chapter count pill, and a cleaner chapter list with
+  hover rows and a custom scrollbar.
+- **Fixed overflow & alignment.** Long titles/filenames now ellipsis inside their
+  fields instead of spilling out; the status line wraps; labels and inputs align
+  on a uniform grid; layout reflows cleanly at narrow widths.
+
 ## 1.2.1 — 2026-09-23
 
 ### Changed

@@ -8,64 +8,87 @@
 </head>
 <body>
   <div class="wrap">
-    <div class="card">
-      <div class="row">
+    <header class="appbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6.5A2.5 2.5 0 0 0 4 21.5z"/>
+            <path d="M4 5.5A2.5 2.5 0 0 0 6.5 8H19"/>
+            <path d="M12 12.5v4M9.8 14.6 12 16.8l2.2-2.2"/>
+          </svg>
+        </span>
+        <div class="brand-text">
+          <div class="brand-title">Novel to EPUB</div>
+          <div class="brand-sub">wtr-lab · Web / Web+ / AI</div>
+        </div>
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card-head"><h2>Source</h2></div>
+      <div class="row url-row">
         <label>Starting URL</label>
         <input id="url" type="text" placeholder="Paste a novel or chapter URL" />
-        <button id="analyse">Load and Analyse</button>
+        <button id="analyse" class="primary">Load &amp; Analyse</button>
       </div>
-      <div class="row"><label>Title</label><input id="title" type="text" /></div>
-      <div class="row"><label>Author</label><input id="author" type="text" /></div>
-      <div class="row"><label>Language</label><input id="language" type="text" value="en" /></div>
-      <div class="row"><label>Filename</label><input id="filename" type="text" /></div>
+
+      <div class="grid2">
+        <div class="row"><label>Title</label><input id="title" type="text" /></div>
+        <div class="row"><label>Author</label><input id="author" type="text" /></div>
+        <div class="row"><label>Language</label><input id="language" type="text" value="en" /></div>
+        <div class="row"><label>Filename</label><input id="filename" type="text" /></div>
+      </div>
+
       <div class="row"><label>Cover Image URL</label><input id="cover" type="text" /><img id="coverPreview" class="coverPreview hidden" alt="cover" /></div>
 
       <div id="modeRow" class="row hidden">
         <label>Translation</label>
-        <div id="modes" class="modes"></div>
+        <div id="modes" class="modes segmented"></div>
       </div>
-    </div>
+    </section>
 
     <div id="resumeBar" class="card resume hidden">
+      <span class="resume-ico" aria-hidden="true">↻</span>
       <span id="resumeMsg" class="resume-msg"></span>
       <button id="resumeBtn" class="primary">Resume</button>
-      <button id="resumeDismiss">Dismiss</button>
+      <button id="resumeDismiss" class="ghost">Dismiss</button>
     </div>
 
-    <div class="card packbox">
+    <section class="card packbox">
       <div class="packbtns">
-        <button id="pack" disabled>Pack EPUB</button>
+        <button id="pack" class="accent" disabled>Pack EPUB</button>
         <button id="update" class="hidden">Update EPUB</button>
         <button id="download" class="primary hidden">⬇ Download EPUB</button>
       </div>
       <div class="progress"><div id="bar"></div></div>
       <div id="status" class="status">Load and analyse a novel to begin.</div>
-    </div>
+    </section>
 
-    <div id="captcha" class="card captcha hidden">
-      <div class="cap-title">⚠️ The site is asking for a CAPTCHA / verification.</div>
-      <div class="cap-msg">Open the page below, complete the check, then click Retry. Your progress is kept.</div>
+    <section id="captcha" class="card captcha hidden">
+      <div class="cap-title"><span class="cap-badge">!</span> Verification needed</div>
+      <div class="cap-msg">Open the page below, complete the check — the pack resumes automatically once it clears.</div>
       <div class="cap-btns">
-        <button id="capOpen">Open CAPTCHA page</button>
-        <button id="capCopy">Copy link</button>
-        <button id="capRetry" class="primary">Retry</button>
+        <button id="capOpen" class="primary">Open CAPTCHA page</button>
+        <button id="capCopy" class="ghost">Copy link</button>
+        <button id="capRetry">Retry</button>
       </div>
-      <label class="cap-opt"><input id="capAutoClose" type="checkbox" checked /> Close the CAPTCHA tab and return here after it's solved</label>
-    </div>
+      <label class="cap-opt"><input id="capAutoClose" type="checkbox" checked /> <span>Close the CAPTCHA tab and return here after it's solved</span></label>
+    </section>
 
-    <div class="card">
+    <section class="card">
+      <div class="card-head"><h2>Chapters</h2><span id="count" class="count">0</span></div>
       <div class="range">
         <label>First</label>
         <select id="first"></select>
         <label>Last</label>
         <select id="last"></select>
-        <button id="selAll">Select All</button>
-        <button id="selNone">Unselect All</button>
-        <span id="count" class="count">Chapter Count: 0</span>
+        <span class="range-spacer"></span>
+        <button id="selAll" class="ghost sm">Select all</button>
+        <button id="selNone" class="ghost sm">Clear</button>
       </div>
-      <div class="tablehead"><span class="inc">Include?</span><span class="ttl">Title</span></div>
+      <div class="tablehead"><span class="inc">Include</span><span class="ttl">Title</span></div>
       <div id="list" class="list"></div>
-    </div>
+    </section>
   </div>
 
   <script type="module" src="popup.js"></script>
