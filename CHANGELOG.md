@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.5 — 2026-09-23
+
+### Added
+- **Retry failed chapters.** A chapter that errors is stubbed as before, but the
+  count is now surfaced and a **Retry failed** button re-fetches only those,
+  keeping the rest — a hiccup mid-run no longer quietly corrupts the book.
+- **Recent novels.** The last 8 analysed novels appear in a dropdown; pick one to
+  reload it without re-pasting the URL.
+- **Progress ETA.** The status shows "Fetching 40 / 170 · ~3 min left".
+- **Keyboard shortcuts.** Enter in the URL box runs Analyse; Enter elsewhere (once
+  a file is built) triggers Download.
+- **Faster parallel fetch** (opt-in). Fetches a few chapters at once for long
+  runs — off by default because it triggers more CAPTCHAs.
+
+### Changed
+- **Cleaner titles/metadata.** Unresolved glossary placeholders like
+  `%{Soul Land|RG91bHVv}` are reduced to their display text in the title,
+  author, filename, and chapter names.
+- **Nicer EPUB output.** Shared stylesheet with justified text and hyphenation, a
+  proper cover page so the book opens on the cover, and tidier chapter markup.
+
 ## 1.4 — 2026-09-23
 
 ### Added

@@ -30,6 +30,7 @@ const S = {
   lastBlob: null,     // the last built EPUB, awaiting the Download button
   lastName: null,
   prefService: null,  // remembered translation mode from last session
+  failed: new Set(),  // indices whose fetch failed (stubbed) — retryable
 };
 
 // ---------- persistence (settings + resume) ----------
@@ -41,8 +42,36 @@ function savePrefs() {
       service: S.service,
       lang: ($("language").value || "").trim(),
       autoClose: $("capAutoClose") ? $("capAutoClose").checked : true,
+      parallel: $("parallel") ? $("parallel").checked : false,
     }});
   } catch (e) { /* ignore */ }
+}
+
+// Recent novels list (newest first, capped).
+function addRecent(url, title) {
+  if (!store || !url) return;
+  try {
+    store.get("recent", (o) => {
+      let list = (o && Array.isArray(o.recent)) ? o.recent : [];
+      list = list.filter((r) => r && r.url !== url);
+      list.unshift({ url, title: title || url, ts: Date.now() });
+      list = list.slice(0, 8);
+      store.set({ recent: list });
+      renderRecent(list);
+    });
+  } catch (e) { /* ignore */ }
+}
+function renderRecent(list) {
+  const sel = $("recent");
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Recent novels…</option>';
+  (list || []).forEach((r) => {
+    const o = document.createElement("option");
+    o.value = r.url; o.textContent = r.title || r.url;
+    sel.appendChild(o);
+  });
+  const row = $("recentRow");
+  if (row) row.classList.toggle("hidden", !(list && list.length));
 }
 
 // Persist enough to continue a pack after a reload. Chapter results hold text +
@@ -106,13 +135,15 @@ async function analyse() {
     updateCoverPreview();
     // fresh novel → drop any previous run + built file
     S.queue = []; S.qpos = 0; S.results = {}; S.imgCache = {}; S.imgN = 0;
-    S.lastBlob = null; S.lastName = null;
+    S.lastBlob = null; S.lastName = null; S.failed = new Set();
     $("download").classList.add("hidden");
     $("update").classList.add("hidden");
+    $("retryFailed").classList.add("hidden");
     renderModes(S.adapter.options());
     renderRange();
     renderList();
     $("pack").disabled = false;
+    addRecent(url, meta.title);
     setStatus(`Loaded ${S.chapters.length} chapters via "${S.adapter.label}" adapter.`);
   } catch (e) {
     console.error(e);
@@ -269,6 +300,20 @@ async function startPack() {
   S.results = {};
   S.imgCache = {};
   S.imgN = 0;
+  S.failed = new Set();
+  stopResumePoll();
+  await runPack();
+}
+
+// Re-fetch only the chapters that failed (were stubbed), keeping the full
+// selection so the rebuilt EPUB still contains every chosen chapter.
+async function retryFailed() {
+  const n = S.failed.size;
+  if (!n) return;
+  for (const i of S.failed) delete S.results[i]; // drop stubs → they become "undone"
+  S.failed = new Set();
+  $("retryFailed").classList.add("hidden");
+  setStatus(`Retrying ${n} failed chapter${n === 1 ? "" : "s"}…`);
   stopResumePoll();
   await runPack();
 }
@@ -287,41 +332,86 @@ async function updatePack() {
   await runPack();
 }
 
+function packDone() {
+  let d = 0;
+  for (const q of S.queue) if (S.results[q.index]) d++;
+  return d;
+}
+function firstUndonePos() {
+  for (let k = 0; k < S.queue.length; k++) if (!S.results[S.queue[k].index]) return k;
+  return S.queue.length;
+}
+function fmtEta(ms) {
+  if (!isFinite(ms) || ms <= 0) return "";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `~${s}s left`;
+  return `~${Math.round(s / 60)} min left`;
+}
+
 async function runPack() {
   if (S.running) return;
   S.running = true;
   $("pack").disabled = true;
-  $("download").classList.add("hidden"); // stale until the (re)build finishes
+  $("download").classList.add("hidden");   // stale until the (re)build finishes
+  $("retryFailed").classList.add("hidden");
   hideCaptcha();
+  const conc = ($("parallel") && $("parallel").checked) ? 3 : 1;
   const delay = S.adapter.id === "wtrlab" ? 1200 : 400;
   const opts = { service: S.service, lang: $("language").value.trim() || "en" };
-  try {
-    while (S.qpos < S.queue.length) {
-      const { index, chapter } = S.queue[S.qpos];
-      const cached = !!S.results[index];
-      // Already-fetched chapters (e.g. on Update) are reused instantly — no
-      // re-fetch, no status churn, and no inter-request delay.
-      if (!cached) {
-        setStatus(`Fetching ${S.qpos + 1} / ${S.queue.length}…`);
-        setBar(S.qpos / S.queue.length);
-        try {
-          S.results[index] = await S.adapter.getChapter(chapter, opts);
-        } catch (e) {
-          if (e.name === "CaptchaError") {
-            S.running = false;
-            saveResume();
-            showCaptcha();
-            setStatus(`Paused at chapter ${S.qpos + 1} (CAPTCHA).`);
-            return;
-          }
-          // per-chapter failure: record a stub and continue
-          console.error("chapter failed", chapter, e);
-          S.results[index] = { title: chapter.title || `Chapter ${index + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
-        }
+  const total = S.queue.length;
+
+  let cursor = 0;             // next queue position to claim
+  let paused = false;         // a worker hit a CAPTCHA
+  let fetchedThisRun = 0;     // for ETA (only real fetches count)
+  const startedAt = Date.now();
+
+  const tick = () => {
+    const done = packDone();
+    setBar(total ? done / total : 0);
+    let eta = "";
+    if (fetchedThisRun > 0 && done < total) {
+      const perItem = (Date.now() - startedAt) / fetchedThisRun; // wall time already reflects concurrency
+      eta = " · " + fmtEta((total - done) * perItem);
+    }
+    setStatus(`Fetching ${done} / ${total}…${eta}`);
+  };
+
+  async function worker() {
+    while (S.running && !paused) {
+      // claim the next not-yet-fetched queue entry (synchronous → race-free)
+      let claim = null;
+      while (cursor < total) {
+        const q = S.queue[cursor++];
+        if (!S.results[q.index]) { claim = q; break; }
       }
-      S.qpos++;
+      if (!claim) return;
+      const idx = claim.index;
+      try {
+        S.results[idx] = await S.adapter.getChapter(claim.chapter, opts);
+        S.failed.delete(idx);
+      } catch (e) {
+        if (e.name === "CaptchaError") { paused = true; return; }
+        console.error("chapter failed", idx, e);
+        S.results[idx] = { title: (S.chapters[idx] && S.chapters[idx].title) || `Chapter ${idx + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
+        S.failed.add(idx);
+      }
+      fetchedThisRun++;
+      tick();
       saveResume();
-      if (!cached && S.qpos < S.queue.length) await sleep(delay);
+      await sleep(delay);
+    }
+  }
+
+  try {
+    tick();
+    await Promise.all(Array.from({ length: conc }, () => worker()));
+    if (paused) {
+      S.running = false;
+      S.qpos = firstUndonePos();
+      saveResume();
+      showCaptcha();
+      setStatus(`Paused at chapter ${S.qpos + 1} (CAPTCHA).`);
+      return;
     }
     await finishPack();
   } finally {
@@ -369,7 +459,15 @@ async function finishPack() {
   $("download").classList.remove("hidden");
   $("update").classList.remove("hidden");
   clearResume(); // this run is complete
-  setStatus(`Ready — ${chapters.length} chapters, ${images.length} images. Click “Download EPUB”.`);
+  const failN = S.failed.size;
+  if (failN) {
+    $("retryFailed").textContent = `Retry ${failN} failed`;
+    $("retryFailed").classList.remove("hidden");
+    setStatus(`Ready — ${chapters.length} chapters, ${failN} failed. Download, or Retry failed.`);
+  } else {
+    $("retryFailed").classList.add("hidden");
+    setStatus(`Ready — ${chapters.length} chapters, ${images.length} images. Click “Download EPUB”.`);
+  }
 }
 
 function doDownload() {
@@ -402,6 +500,12 @@ async function resumeFromSaved(saved) {
   // restore the queue, the already-fetched chapters, and the selection
   S.queue = (saved.selected || []).map((i) => ({ index: i, chapter: S.chapters[i] })).filter((q) => q.chapter);
   S.results = saved.results || {};
+  // Rebuild the failed set from restored stubs so Retry failed still works.
+  S.failed = new Set();
+  for (const k in S.results) {
+    const r = S.results[k];
+    if (r && r.blocks && r.blocks.length === 1 && r.blocks[0].type === "text" && /^\[Failed to load/.test(r.blocks[0].text || "")) S.failed.add(+k);
+  }
   S.qpos = Math.min(saved.qpos || 0, S.queue.length);
   const selSet = new Set(saved.selected || []);
   document.querySelectorAll(".item input").forEach((cb) => { cb.checked = selSet.has(+cb.dataset.i); });
@@ -414,13 +518,15 @@ function loadPrefsAndResume() {
   return new Promise((resolve) => {
     if (!store) { resolve(); return; }
     try {
-      store.get(["prefs", "resume"], (o) => {
+      store.get(["prefs", "resume", "recent"], (o) => {
         const p = o && o.prefs;
         if (p) {
           S.prefService = p.service || null;
           if (p.lang) $("language").value = p.lang;
           if (typeof p.autoClose === "boolean" && $("capAutoClose")) $("capAutoClose").checked = p.autoClose;
+          if (typeof p.parallel === "boolean" && $("parallel")) $("parallel").checked = p.parallel;
         }
+        if (o && Array.isArray(o.recent)) renderRecent(o.recent);
         const r = o && o.resume;
         const total = r && (r.total || (r.selected ? r.selected.length : 0));
         if (r && r.selected && r.selected.length && (r.qpos || 0) < total) {
@@ -533,9 +639,22 @@ async function init() {
   }
 
   $("analyse").addEventListener("click", analyse);
+  $("url").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); analyse(); } });
+  document.addEventListener("keydown", (e) => {
+    // Enter anywhere outside a field, when a built file is ready → download
+    if (e.key !== "Enter" || $("download").classList.contains("hidden")) return;
+    const tag = (document.activeElement && document.activeElement.tagName) || "";
+    if (!/INPUT|SELECT|TEXTAREA|BUTTON/.test(tag)) { e.preventDefault(); doDownload(); }
+  });
   $("pack").addEventListener("click", startPack);
   $("update").addEventListener("click", updatePack);
+  $("retryFailed").addEventListener("click", retryFailed);
   $("download").addEventListener("click", doDownload);
+  $("recent").addEventListener("change", (e) => {
+    const v = e.target.value; if (!v) return;
+    $("url").value = v; e.target.value = ""; analyse();
+  });
+  $("parallel").addEventListener("change", savePrefs);
   $("cover").addEventListener("input", updateCoverPreview);
   $("language").addEventListener("change", savePrefs);
   const cac = $("capAutoClose"); if (cac) cac.addEventListener("change", savePrefs);

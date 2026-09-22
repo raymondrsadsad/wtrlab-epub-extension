@@ -129,13 +129,35 @@ export function buildEpub(meta, chapters, images) {
 </container>`,
   });
 
-  // cover
-  let coverManifest = "", coverMeta = "", coverImageItem = "";
+  // shared stylesheet
+  files.push({
+    name: "OEBPS/style.css",
+    data: `html,body{margin:0;padding:0}
+body{font-family:Georgia,"Times New Roman",serif;line-height:1.7;color:#111;margin:1.2em 1.15em}
+h1{font-size:1.35em;line-height:1.3;margin:0 0 1em;text-align:left}
+p{margin:0 0 .9em;text-align:justify;-webkit-hyphens:auto;hyphens:auto}
+img{max-width:100%;height:auto;display:block;margin:1.2em auto}
+.cover{margin:0;padding:0;height:100%;text-align:center}
+.cover img{max-width:100%;max-height:100vh;height:auto;margin:0 auto}`,
+  });
+
+  // cover (image metadata + a real cover page so the book opens on it)
+  let coverMeta = "", coverImageItem = "", coverPageItem = "", coverPageRef = "";
   if (meta.cover && meta.cover.data) {
     const cname = "images/cover." + (meta.cover.ext || "jpg");
     files.push({ name: "OEBPS/" + cname, data: meta.cover.data });
     coverImageItem = `<item id="cover-image" href="${cname}" media-type="${meta.cover.mime || "image/jpeg"}" properties="cover-image"/>`;
     coverMeta = `<meta name="cover" content="cover-image"/>`;
+    files.push({
+      name: "OEBPS/cover.xhtml",
+      data: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
+<head><meta charset="utf-8"/><title>Cover</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
+<body class="cover" epub:type="cover"><img src="${cname}" alt="Cover"/></body></html>`,
+    });
+    coverPageItem = `<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>`;
+    coverPageRef = `<itemref idref="coverpage"/>`;
   }
 
   // images
@@ -157,7 +179,7 @@ export function buildEpub(meta, chapters, images) {
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
 <head><meta charset="utf-8"/><title>${xmlEscape(ch.title)}</title>
-<style>body{font-family:serif;line-height:1.6;margin:1em}h1{font-size:1.3em}img{max-width:100%;height:auto;display:block;margin:1em auto}p{margin:0 0 1em}</style>
+<link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
 <body><h1>${xmlEscape(ch.title)}</h1>
 ${ch.xhtmlBody}
@@ -175,7 +197,7 @@ ${ch.xhtmlBody}
     data: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
-<head><meta charset="utf-8"/><title>Contents</title></head>
+<head><meta charset="utf-8"/><title>Contents</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body><nav epub:type="toc" id="toc"><h1>Contents</h1><ol>${navList.join("")}</ol></nav></body></html>`,
   });
 
@@ -205,11 +227,14 @@ ${ch.xhtmlBody}
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
     <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style.css" media-type="text/css"/>
     ${coverImageItem}
+    ${coverPageItem}
     ${imageItems.join("\n    ")}
     ${chapItems.join("\n    ")}
   </manifest>
   <spine toc="ncx">
+    ${coverPageRef}
     ${chapRefs.join("\n    ")}
   </spine>
 </package>`,

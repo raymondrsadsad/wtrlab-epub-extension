@@ -99,6 +99,17 @@ class CaptchaError extends Error {
   constructor() { super("Turnstile challenge required"); this.name = "CaptchaError"; }
 }
 
+// wtr-lab leaves unresolved glossary placeholders like "%{Soul Land|RG91bHVv}"
+// (or "%{Soul Land}") in titles. Reduce them to their display text.
+function cleanTitle(s) {
+  if (s == null) return s;
+  return String(s)
+    .replace(/%\{\s*([^|{}]+?)\s*\|[^{}]*\}/g, "$1") // %{Display|id} -> Display
+    .replace(/%\{\s*([^{}]*?)\s*\}/g, "$1")          // %{Display}    -> Display
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 // Fetch real chapter titles from wtr-lab's own chapter-list API so the tool can
 // list "#1 Douluo Diary: Bibi Dong Breaks Down" instead of a fabricated
 // "Chapter 1". The endpoint keys on the numeric id in the /novel/<id>/ URL
@@ -116,7 +127,7 @@ async function fetchChapterTitles(novelId) {
     for (const c of list) {
       const no = typeof c.order === "number" ? c.order
         : (typeof c.order === "string" && /^\d+$/.test(c.order) ? +c.order : null);
-      const title = c && c.title != null ? String(c.title).trim() : "";
+      const title = c && c.title != null ? cleanTitle(String(c.title)) : "";
       if (no != null && title) map.set(no, title);
     }
     return map.size ? map : null;
@@ -204,8 +215,8 @@ export function create() {
         chapters.push({ no: n, url: readerUrl(n), title: labelFor(n, titleMap && titleMap.get(n)) });
       }
       return {
-        title: sd.data.title,
-        author: sd.data.author || sd.author || "Unknown",
+        title: cleanTitle(sd.data.title),
+        author: cleanTitle(sd.data.author || sd.author) || "Unknown",
         language: "en",
         cover: sd.data.image || null,
         slug: sd.slug,
@@ -262,6 +273,7 @@ export function create() {
       if (service !== "ai" && /[一-鿿]/.test(title)) {
         try { title = (await translateAll([title], lang))[0]; } catch {}
       }
+      title = cleanTitle(title);
 
       // reassemble blocks
       const blocks = [];
