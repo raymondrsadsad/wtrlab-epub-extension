@@ -29,7 +29,12 @@ button.primary { background: var(--accent); border-color: var(--accent); }
 .modes { display: flex; gap: 16px; }
 .modes label { width: auto; color: var(--fg); display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .packbox { display: flex; align-items: center; gap: 14px; }
+.packbtns { display: flex; gap: 10px; flex: none; }
 .packbox #pack { background: var(--accent2); border-color: var(--accent2); color: #08240f; font-weight: 600; }
+.packbox #download { font-weight: 600; }
+.coverPreview { width: 46px; height: 64px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); flex: none; }
+.resume { border-color: var(--accent); display: flex; align-items: center; gap: 12px; }
+.resume-msg { flex: 1; color: var(--fg); }
 .progress { flex: 1; height: 20px; background: #1e1e22; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 #bar { height: 100%; width: 0; background: var(--accent2); transition: width .2s; }
 .status { color: var(--muted); flex: none; min-width: 180px; }

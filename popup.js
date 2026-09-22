@@ -27,7 +27,39 @@ const S = {
   imgCache: {},       // url -> {name, id, mime, data}
   imgN: 0,
   running: false,
+  lastBlob: null,     // the last built EPUB, awaiting the Download button
+  lastName: null,
+  prefService: null,  // remembered translation mode from last session
 };
+
+// ---------- persistence (settings + resume) ----------
+const store = (typeof chrome !== "undefined" && chrome.storage) ? chrome.storage.local : null;
+
+function savePrefs() {
+  try {
+    store && store.set({ prefs: {
+      service: S.service,
+      lang: ($("language").value || "").trim(),
+      autoClose: $("capAutoClose") ? $("capAutoClose").checked : true,
+    }});
+  } catch (e) { /* ignore */ }
+}
+
+// Persist enough to continue a pack after a reload. Chapter results hold text +
+// image URLs (not bytes), so they serialise cleanly; images are re-fetched at
+// build time. Kept small by storing only what a resume needs.
+function saveResume() {
+  try {
+    store && store.set({ resume: {
+      url: $("url").value, service: S.service,
+      title: $("title").value, author: $("author").value, language: $("language").value,
+      filename: $("filename").value, cover: $("cover").value,
+      selected: S.queue.map((q) => q.index),
+      results: S.results, qpos: S.qpos, total: S.queue.length, ts: Date.now(),
+    }});
+  } catch (e) { /* ignore (e.g. quota) */ }
+}
+function clearResume() { try { store && store.remove("resume"); } catch (e) {} }
 
 function setStatus(t) { $("status").textContent = t; }
 function setBar(frac) { $("bar").style.width = Math.round(frac * 100) + "%"; }
@@ -47,6 +79,13 @@ function extFromMime(m) {
 function sanitizeName(s) {
   return (s || "novel").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || "novel";
 }
+function updateCoverPreview() {
+  const img = $("coverPreview");
+  if (!img) return;
+  const u = ($("cover").value || "").trim();
+  if (u) { img.src = u; img.classList.remove("hidden"); }
+  else { img.removeAttribute("src"); img.classList.add("hidden"); }
+}
 
 // ---------- analyse ----------
 async function analyse() {
@@ -64,6 +103,12 @@ async function analyse() {
     $("language").value = meta.language || "en";
     $("filename").value = sanitizeName(meta.title);
     $("cover").value = meta.cover || "";
+    updateCoverPreview();
+    // fresh novel → drop any previous run + built file
+    S.queue = []; S.qpos = 0; S.results = {}; S.imgCache = {}; S.imgN = 0;
+    S.lastBlob = null; S.lastName = null;
+    $("download").classList.add("hidden");
+    $("update").classList.add("hidden");
     renderModes(S.adapter.options());
     renderRange();
     renderList();
@@ -84,7 +129,9 @@ function renderModes(opts) {
     row.classList.add("hidden"); S.service = null; return;
   }
   row.classList.remove("hidden");
-  S.service = opts.defaultService || opts.services[0].id;
+  // Prefer the mode remembered from last session, if this adapter offers it.
+  S.service = (S.prefService && opts.services.some((s) => s.id === S.prefService))
+    ? S.prefService : (opts.defaultService || opts.services[0].id);
   for (const s of opts.services) {
     const id = "mode_" + s.id;
     const lbl = document.createElement("label");
@@ -92,7 +139,7 @@ function renderModes(opts) {
     box.appendChild(lbl);
   }
   box.querySelectorAll('input[name=mode]').forEach((r) =>
-    r.addEventListener("change", (e) => { S.service = e.target.value; })
+    r.addEventListener("change", (e) => { S.service = e.target.value; savePrefs(); })
   );
 }
 
@@ -176,10 +223,23 @@ async function startPack() {
   await runPack();
 }
 
+// Re-pack the CURRENT selection while reusing everything already fetched, so
+// changing the range (e.g. 1–20 → 1–50) only downloads the new chapters.
+async function updatePack() {
+  const sel = selectedIndices();
+  if (!sel.length) { setStatus("No chapters selected."); return; }
+  S.queue = sel.map((i) => ({ index: i, chapter: S.chapters[i] }));
+  S.qpos = 0;
+  // keep S.results / S.imgCache / S.imgN so done chapters aren't re-fetched
+  stopResumePoll();
+  await runPack();
+}
+
 async function runPack() {
   if (S.running) return;
   S.running = true;
   $("pack").disabled = true;
+  $("download").classList.add("hidden"); // stale until the (re)build finishes
   hideCaptcha();
   const delay = S.adapter.id === "wtrlab" ? 1200 : 400;
   const opts = { service: S.service, lang: $("language").value.trim() || "en" };
@@ -195,6 +255,7 @@ async function runPack() {
       } catch (e) {
         if (e.name === "CaptchaError") {
           S.running = false;
+          saveResume();
           showCaptcha();
           setStatus(`Paused at chapter ${S.qpos + 1} (CAPTCHA).`);
           return;
@@ -204,6 +265,7 @@ async function runPack() {
         S.results[index] = { title: chapter.title || `Chapter ${index + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
       }
       S.qpos++;
+      saveResume();
       if (S.qpos < S.queue.length) await sleep(delay);
     }
     await finishPack();
@@ -244,13 +306,78 @@ async function finishPack() {
   };
   const blob = buildEpub(meta, chapters, images);
   const fname = sanitizeName($("filename").value) + ".epub";
-  const objUrl = URL.createObjectURL(blob);
-  chrome.downloads.download({ url: objUrl, filename: fname, saveAs: false }, () => {
-    setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
-  });
+  // Don't auto-download — hold the file and let the user click Download.
+  S.lastBlob = blob;
+  S.lastName = fname;
   S.running = false;
   $("pack").disabled = false;
-  setStatus(`Done — saved ${fname} (${chapters.length} chapters, ${images.length} images).`);
+  $("download").classList.remove("hidden");
+  $("update").classList.remove("hidden");
+  clearResume(); // this run is complete
+  setStatus(`Ready — ${chapters.length} chapters, ${images.length} images. Click “Download EPUB”.`);
+}
+
+function doDownload() {
+  if (!S.lastBlob) { setStatus("Nothing packed yet — click Pack EPUB first."); return; }
+  const objUrl = URL.createObjectURL(S.lastBlob);
+  chrome.downloads.download({ url: objUrl, filename: S.lastName, saveAs: false }, () => {
+    setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
+  });
+  setStatus(`Downloading ${S.lastName}…`);
+}
+
+// Restore an interrupted pack saved before a reload, then continue it.
+async function resumeFromSaved(saved) {
+  $("resumeBar").classList.add("hidden");
+  $("url").value = saved.url || "";
+  setStatus("Restoring previous pack — re-analysing novel…");
+  await analyse(); // rebuilds adapter state + chapter list (and clears run state)
+  if (!S.chapters.length) { setStatus("Couldn't restore — analyse failed. Try again."); return; }
+  // reapply the fields the user may have customised
+  if (saved.title) $("title").value = saved.title;
+  if (saved.author) $("author").value = saved.author;
+  if (saved.language) $("language").value = saved.language;
+  if (saved.filename) $("filename").value = saved.filename;
+  if (saved.cover) { $("cover").value = saved.cover; updateCoverPreview(); }
+  if (saved.service) {
+    S.service = saved.service;
+    const radio = document.querySelector(`input[name=mode][value="${saved.service}"]`);
+    if (radio) radio.checked = true;
+  }
+  // restore the queue, the already-fetched chapters, and the selection
+  S.queue = (saved.selected || []).map((i) => ({ index: i, chapter: S.chapters[i] })).filter((q) => q.chapter);
+  S.results = saved.results || {};
+  S.qpos = Math.min(saved.qpos || 0, S.queue.length);
+  const selSet = new Set(saved.selected || []);
+  document.querySelectorAll(".item input").forEach((cb) => { cb.checked = selSet.has(+cb.dataset.i); });
+  setStatus(`Resuming — ${S.qpos}/${S.queue.length} chapters already fetched.`);
+  await runPack();
+}
+
+// Load saved settings, and show the Resume banner if a pack was interrupted.
+function loadPrefsAndResume() {
+  return new Promise((resolve) => {
+    if (!store) { resolve(); return; }
+    try {
+      store.get(["prefs", "resume"], (o) => {
+        const p = o && o.prefs;
+        if (p) {
+          S.prefService = p.service || null;
+          if (p.lang) $("language").value = p.lang;
+          if (typeof p.autoClose === "boolean" && $("capAutoClose")) $("capAutoClose").checked = p.autoClose;
+        }
+        const r = o && o.resume;
+        const total = r && (r.total || (r.selected ? r.selected.length : 0));
+        if (r && r.selected && r.selected.length && (r.qpos || 0) < total) {
+          $("resumeMsg").textContent = `Unfinished pack: “${r.title || r.url}” — ${r.qpos || 0}/${total} chapters fetched.`;
+          $("resumeBar").classList.remove("hidden");
+          $("resumeBtn").onclick = () => resumeFromSaved(r);
+          $("resumeDismiss").onclick = () => { $("resumeBar").classList.add("hidden"); clearResume(); };
+        }
+        resolve();
+      });
+    } catch (e) { resolve(); }
+  });
 }
 
 // ---------- captcha panel ----------
@@ -330,7 +457,7 @@ function captchaUrl() {
 }
 
 // ---------- wire up ----------
-function init() {
+async function init() {
   // Remember our own tab so we can return focus here after a CAPTCHA solve.
   chrome.tabs.getCurrent((t) => { if (t) { toolTabId = t.id; toolWinId = t.windowId; } });
 
@@ -352,6 +479,12 @@ function init() {
 
   $("analyse").addEventListener("click", analyse);
   $("pack").addEventListener("click", startPack);
+  $("update").addEventListener("click", updatePack);
+  $("download").addEventListener("click", doDownload);
+  $("cover").addEventListener("input", updateCoverPreview);
+  $("language").addEventListener("change", savePrefs);
+  const cac = $("capAutoClose"); if (cac) cac.addEventListener("change", savePrefs);
+  const cp = $("coverPreview"); if (cp) cp.onerror = () => cp.classList.add("hidden");
   $("selAll").addEventListener("click", () => document.querySelectorAll(".item input").forEach((c) => (c.checked = true)));
   $("selNone").addEventListener("click", () => document.querySelectorAll(".item input").forEach((c) => (c.checked = false)));
 
@@ -362,6 +495,9 @@ function init() {
   });
   $("capCopy").addEventListener("click", () => { const u = captchaUrl(); if (u) navigator.clipboard.writeText(u); setStatus("CAPTCHA link copied."); });
   $("capRetry").addEventListener("click", () => { stopResumePoll(); hideCaptcha(); runPack(); });
+
+  // Load saved settings + any interrupted pack before auto-analysing.
+  await loadPrefsAndResume();
 
   // Opened the extension while on wtr-lab → load & analyse the novel right away.
   if (autoWtr) analyse();

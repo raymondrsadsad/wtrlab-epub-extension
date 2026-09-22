@@ -188,12 +188,20 @@ export function create() {
       state.rawId = sd.raw_id;
       state.slug = sd.slug;
       const count = sd.chapter_count;
-      // The chapter-list API keys on the /novel/<id>/ segment, not raw_id.
+      // The chapter-list API and reader URLs key on the /novel/<id>/ segment
+      // (not raw_id). Capture the id, language and slug so we can build a real
+      // reader URL for each chapter (used by the CAPTCHA "Open page" button).
       const idm = url.match(/\/novel\/(\d+)/);
-      const titleMap = await fetchChapterTitles(idm ? idm[1] : null); // Map<no,title>|null
+      const langm = url.match(/wtr-lab\.com\/([a-z]{2})\//i);
+      const novelId = idm ? idm[1] : null;
+      const lang = langm ? langm[1] : "en";
+      const slug = sd.slug;
+      const readerUrl = (no) =>
+        novelId ? `https://wtr-lab.com/${lang}/novel/${novelId}/${slug}/chapter-${no}` : null;
+      const titleMap = await fetchChapterTitles(novelId); // Map<no,title>|null
       const chapters = [];
       for (let n = 1; n <= count; n++) {
-        chapters.push({ no: n, title: labelFor(n, titleMap && titleMap.get(n)) });
+        chapters.push({ no: n, url: readerUrl(n), title: labelFor(n, titleMap && titleMap.get(n)) });
       }
       return {
         title: sd.data.title,

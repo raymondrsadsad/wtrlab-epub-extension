@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2 — 2026-09-23
+
+### Added
+- **Download button.** Packing no longer downloads automatically — it builds the
+  EPUB and shows a **⬇ Download EPUB** button so you choose when to save.
+- **Update button.** After a pack, change the range (e.g. 1–20 → 1–50) and click
+  **Update EPUB**; it reuses everything already fetched and only downloads the
+  new chapters, then rebuilds.
+- **Remembers your settings.** Your translation mode (Web / Web+ / AI), language,
+  and the "close CAPTCHA tab" checkbox are saved and restored next time.
+- **Cover thumbnail.** A small preview of the cover image appears next to the URL.
+- **Resume an interrupted pack.** If a big pack is cut off (reload/close), a
+  Resume banner offers to restore progress and continue where it left off.
+
+### Fixed
+- **"Open CAPTCHA page" always opens the stalled chapter.** Each chapter now
+  carries its real reader URL, so the button no longer falls back to the novel
+  homepage.
+
 ## 1.1 — 2026-09-23
 
 Quality-of-life pass focused on the wtr-lab CAPTCHA flow.

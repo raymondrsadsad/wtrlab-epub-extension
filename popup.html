@@ -18,7 +18,7 @@
       <div class="row"><label>Author</label><input id="author" type="text" /></div>
       <div class="row"><label>Language</label><input id="language" type="text" value="en" /></div>
       <div class="row"><label>Filename</label><input id="filename" type="text" /></div>
-      <div class="row"><label>Cover Image URL</label><input id="cover" type="text" /></div>
+      <div class="row"><label>Cover Image URL</label><input id="cover" type="text" /><img id="coverPreview" class="coverPreview hidden" alt="cover" /></div>
 
       <div id="modeRow" class="row hidden">
         <label>Translation</label>
@@ -26,8 +26,18 @@
       </div>
     </div>
 
+    <div id="resumeBar" class="card resume hidden">
+      <span id="resumeMsg" class="resume-msg"></span>
+      <button id="resumeBtn" class="primary">Resume</button>
+      <button id="resumeDismiss">Dismiss</button>
+    </div>
+
     <div class="card packbox">
-      <button id="pack" disabled>Pack EPUB</button>
+      <div class="packbtns">
+        <button id="pack" disabled>Pack EPUB</button>
+        <button id="update" class="hidden">Update EPUB</button>
+        <button id="download" class="primary hidden">⬇ Download EPUB</button>
+      </div>
       <div class="progress"><div id="bar"></div></div>
       <div id="status" class="status">Load and analyse a novel to begin.</div>
     </div>
