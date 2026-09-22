@@ -32,6 +32,7 @@ const S = {
   prefService: null,  // remembered translation mode from last session
   failed: new Set(),  // indices whose fetch failed (stubbed) — retryable
   cancel: false,      // Stop button pressed
+  runId: 0,           // bumped to supersede an in-flight run (e.g. switching novels)
   counts: {},         // url -> chapter count at last pack (for "new since" detection)
   newFrom: null,      // index from which chapters are "new" this analyse
   currentUrl: null,   // url of the analysed novel
@@ -159,12 +160,18 @@ async function analyse() {
     $("filename").value = sanitizeName(meta.title);
     $("cover").value = meta.cover || "";
     updateCoverPreview();
-    // fresh novel → drop any previous run + built file
+    // fresh novel → supersede any in-flight run and clear all run UI
+    S.runId++;
+    S.running = false; S.cancel = false;
+    stopResumePoll();
+    hideCaptcha();
+    setBar(0);
     S.queue = []; S.qpos = 0; S.results = {}; S.imgCache = {}; S.imgN = 0;
     S.lastBlob = null; S.lastName = null; S.failed = new Set();
     $("download").classList.add("hidden");
     $("update").classList.add("hidden");
     $("retryFailed").classList.add("hidden");
+    $("stop").classList.add("hidden");
     renderModes(S.adapter.options());
     renderRange();
     renderList();
@@ -404,6 +411,7 @@ async function runPack() {
   if (S.running) return;
   S.running = true;
   S.cancel = false;
+  const myRun = ++S.runId;
   $("pack").disabled = true;
   $("download").classList.add("hidden");   // stale until the (re)build finishes
   $("retryFailed").classList.add("hidden");
@@ -432,7 +440,7 @@ async function runPack() {
   };
 
   async function worker() {
-    while (S.running && !paused && !S.cancel) {
+    while (S.running && !paused && !S.cancel && S.runId === myRun) {
       // claim the next not-yet-fetched queue entry (synchronous → race-free)
       let claim = null;
       while (cursor < total) {
@@ -443,10 +451,13 @@ async function runPack() {
       const idx = claim.index;
       setRowStatus(idx, "loading");
       try {
-        S.results[idx] = await S.adapter.getChapter(claim.chapter, opts);
+        const res = await S.adapter.getChapter(claim.chapter, opts);
+        if (S.runId !== myRun) return; // superseded (user switched novels) — drop result
+        S.results[idx] = res;
         S.failed.delete(idx);
         setRowStatus(idx, "ok");
       } catch (e) {
+        if (S.runId !== myRun) return; // superseded — ignore
         if (e.name === "CaptchaError") { paused = true; setRowStatus(idx, ""); return; }
         console.error("chapter failed", idx, e);
         S.results[idx] = { title: (S.chapters[idx] && S.chapters[idx].title) || `Chapter ${idx + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
@@ -463,6 +474,7 @@ async function runPack() {
   try {
     tick();
     await Promise.all(Array.from({ length: conc }, () => worker()));
+    if (S.runId !== myRun) return; // a newer analyse/run took over
     if (S.cancel) {
       S.running = false;
       $("pack").disabled = false;
@@ -482,8 +494,10 @@ async function runPack() {
     }
     await finishPack();
   } finally {
-    $("stop").classList.add("hidden");
-    if (S.running) { S.running = false; $("pack").disabled = false; }
+    if (S.runId === myRun) {
+      $("stop").classList.add("hidden");
+      if (S.running) { S.running = false; $("pack").disabled = false; }
+    }
   }
 }
 

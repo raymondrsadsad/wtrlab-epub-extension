@@ -116,8 +116,23 @@ export function create() {
         return el ? el.getAttribute("content") : null;
       };
       const title = (meta("og:title") || (doc.querySelector("title") || {}).textContent || "Untitled").trim();
-      const cover = meta("og:image");
       const author = meta("author") || meta("book:author") || "Unknown";
+
+      // Cover: prefer a real cover <img> over an OG-card generator endpoint
+      // (e.g. /api/og/…), which many sites use for social previews.
+      const isGenerated = (u) => /\/(api\/)?og(\/|\?|$)|opengraph|\/og-image/i.test(u || "");
+      let imgCover = null;
+      for (const im of doc.querySelectorAll("img")) {
+        const hint = ((im.getAttribute("alt") || "") + " " + (im.className || "") + " " + (im.id || "")).toLowerCase();
+        if (/cover|poster|thumbnail|thumb|book-?img|novel-?img/.test(hint)) {
+          const s = imgSrc(im);
+          if (s && !/\.svg($|\?)/i.test(s)) { imgCover = s; break; }
+        }
+      }
+      const og = meta("og:image") || meta("twitter:image");
+      const linkSrc = (() => { const l = doc.querySelector('link[rel="image_src"]'); return l ? l.getAttribute("href") : null; })();
+      const coverRaw = imgCover || linkSrc || (og && !isGenerated(og) ? og : null) || og;
+      const cover = coverRaw ? abs(coverRaw, url) : null;
       const description = (meta("og:description") || meta("description") || "").trim();
       const kw = meta("keywords") || "";
       const subjects = kw.split(/[,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 20);

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.1 — 2026-09-23
+
+### Fixed
+- **Switching novels no longer shows the previous pack's progress.** Analysing (or
+  picking a Recent) now resets the progress bar and buttons, and supersedes any
+  in-flight run via a run-id guard so stale results/UI can't leak in.
+- **Generic cover** prefers a real cover image over an OG-card generator endpoint
+  (e.g. `/api/og/…`); falls back to `link[rel=image_src]` / `twitter:image`.
+
 ## 1.7 — 2026-09-23
 
 ### Added
