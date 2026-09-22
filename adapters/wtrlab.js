@@ -99,6 +99,79 @@ class CaptchaError extends Error {
   constructor() { super("Turnstile challenge required"); this.name = "CaptchaError"; }
 }
 
+// Pull real chapter titles out of the novel page's __NEXT_DATA__ so the tool can
+// list "Chapter 170 ending" etc. instead of a fabricated "Chapter 170".
+// The exact key names vary, so we deep-search for the chapter array using the
+// known chapter count to disambiguate it from other lists (e.g. similar novels),
+// and fall back to null (→ generic titles) if nothing convincing is found.
+const ORDER_KEYS = ["order", "no", "chapter_no", "number", "index", "idx", "id"];
+const TITLE_KEYS = ["title", "name", "chapter_title", "text"];
+
+function pickTitleString(obj) {
+  for (const k of TITLE_KEYS) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  // sometimes nested under a `data` object
+  if (obj.data && typeof obj.data === "object") {
+    for (const k of TITLE_KEYS) {
+      const v = obj.data[k];
+      if (typeof v === "string" && v.trim()) return v.trim();
+    }
+  }
+  return null;
+}
+function pickOrderNumber(obj) {
+  for (const k of ORDER_KEYS) {
+    const v = obj[k];
+    const n = typeof v === "number" ? v : (typeof v === "string" && /^\d+$/.test(v) ? +v : null);
+    if (n != null) return n;
+  }
+  return null;
+}
+
+function extractChapterTitles(data, count) {
+  const root = data && data.props && data.props.pageProps;
+  if (!root) return null;
+  const candidates = [];
+  const seen = new Set();
+  const visit = (o, depth) => {
+    if (!o || typeof o !== "object" || depth > 7 || seen.has(o)) return;
+    seen.add(o);
+    if (Array.isArray(o)) {
+      if (o.length >= 2 && o.every((x) => x && typeof x === "object" && !Array.isArray(x))) {
+        const s = o[0];
+        if (pickTitleString(s) != null && pickOrderNumber(s) != null) candidates.push(o);
+      }
+      for (const x of o) visit(x, depth + 1);
+    } else {
+      for (const k in o) visit(o[k], depth + 1);
+    }
+  };
+  visit(root, 0);
+  if (!candidates.length) return null;
+  // Prefer the array whose length is closest to the real chapter count.
+  candidates.sort((a, b) => Math.abs(a.length - count) - Math.abs(b.length - count));
+  const arr = candidates[0];
+  // Require a decent overlap with the expected count to avoid false positives.
+  if (arr.length < Math.max(2, Math.min(count, 5)) || arr.length < count * 0.5) return null;
+  const map = new Map();
+  for (const c of arr) {
+    const no = pickOrderNumber(c);
+    const title = pickTitleString(c);
+    if (no != null && title) map.set(no, title);
+  }
+  return map.size ? map : null;
+}
+
+// Combine a chapter number with its real title, avoiding a doubled number when
+// the stored title already begins with "Chapter N" or "N".
+function labelFor(no, title) {
+  if (!title) return `Chapter ${no}`;
+  const cleaned = title.replace(new RegExp(`^\\s*(chapter\\s*)?${no}\\b[\\s:.\\-]*`, "i"), "").trim();
+  return cleaned ? `#${no} ${cleaned}` : `#${no} ${title}`;
+}
+
 export function create() {
   const state = { rawId: null, slug: null, glossary: null };
 
@@ -153,8 +226,11 @@ export function create() {
       state.rawId = sd.raw_id;
       state.slug = sd.slug;
       const count = sd.chapter_count;
+      const titleMap = extractChapterTitles(data, count); // Map<no, realTitle> | null
       const chapters = [];
-      for (let n = 1; n <= count; n++) chapters.push({ no: n, title: `Chapter ${n}` });
+      for (let n = 1; n <= count; n++) {
+        chapters.push({ no: n, title: labelFor(n, titleMap && titleMap.get(n)) });
+      }
       return {
         title: sd.data.title,
         author: sd.data.author || sd.author || "Unknown",

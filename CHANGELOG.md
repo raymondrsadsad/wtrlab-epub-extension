@@ -5,6 +5,10 @@
 Quality-of-life pass focused on the wtr-lab CAPTCHA flow.
 
 ### Added
+- **Real chapter titles in the list.** The tool now shows the actual titles from
+  the Table of Contents (e.g. "#170 ending") instead of a generic "Chapter 170",
+  read from the novel page data. Falls back to generic numbering if titles can't
+  be found.
 - **Auto-analyse on wtr-lab.** Clicking the extension while on a wtr-lab page now
   fills the URL and analyses the novel automatically — the chapter list is ready
   without pressing "Load and Analyse". Works from a chapter page too (the URL is
