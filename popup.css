@@ -32,7 +32,21 @@ button.primary { background: var(--accent); border-color: var(--accent); }
 .packbtns { display: flex; gap: 10px; flex: none; }
 .packbox #pack { background: var(--accent2); border-color: var(--accent2); color: #08240f; font-weight: 600; }
 .packbox #download { font-weight: 600; }
-.coverPreview { width: 46px; height: 64px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); flex: none; }
+.coverPreview {
+  width: 46px; height: 64px; object-fit: cover; border-radius: 4px;
+  border: 1px solid var(--border); flex: none; cursor: zoom-in;
+  transition: transform .15s ease, box-shadow .15s ease;
+}
+/* Hover: pop it out larger (grows toward the right, over the field). */
+.coverPreview:not(.zoomed):hover {
+  transform: scale(3.6); transform-origin: left center;
+  box-shadow: 0 8px 28px rgba(0,0,0,.6); position: relative; z-index: 20;
+}
+/* Click: lock it to a big inline size until clicked again. */
+.coverPreview.zoomed {
+  width: 240px; height: 336px; cursor: zoom-out;
+  box-shadow: 0 8px 28px rgba(0,0,0,.6); position: relative; z-index: 20;
+}
 .resume { border-color: var(--accent); display: flex; align-items: center; gap: 12px; }
 .resume-msg { flex: 1; color: var(--fg); }
 .progress { flex: 1; height: 20px; background: #1e1e22; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }

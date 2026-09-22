@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1 — 2026-09-23
+
+### Changed
+- **Update now truly continues** instead of appearing to restart. Already-fetched
+  chapters are reused instantly — no re-fetch, no 1.2s delay each. So 1–6 → 1–10
+  only fetches 7–10, and shrinking 1–10 → 1–5 just rebuilds with 1–5 (no re-pack).
+- **Cover preview zoom.** Hover the thumbnail to pop it out larger; click it to
+  lock a big view (click again to shrink).
+
 ## 1.2 — 2026-09-23
 
 ### Added

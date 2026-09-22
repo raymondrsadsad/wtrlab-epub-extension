@@ -231,6 +231,8 @@ async function updatePack() {
   S.queue = sel.map((i) => ({ index: i, chapter: S.chapters[i] }));
   S.qpos = 0;
   // keep S.results / S.imgCache / S.imgN so done chapters aren't re-fetched
+  const have = sel.filter((i) => S.results[i]).length;
+  setStatus(`Updating — reusing ${have} fetched, getting ${sel.length - have} new…`);
   stopResumePoll();
   await runPack();
 }
@@ -246,27 +248,30 @@ async function runPack() {
   try {
     while (S.qpos < S.queue.length) {
       const { index, chapter } = S.queue[S.qpos];
-      setStatus(`Fetching ${S.qpos + 1} / ${S.queue.length}…`);
-      setBar(S.qpos / S.queue.length);
-      try {
-        if (!S.results[index]) {
+      const cached = !!S.results[index];
+      // Already-fetched chapters (e.g. on Update) are reused instantly — no
+      // re-fetch, no status churn, and no inter-request delay.
+      if (!cached) {
+        setStatus(`Fetching ${S.qpos + 1} / ${S.queue.length}…`);
+        setBar(S.qpos / S.queue.length);
+        try {
           S.results[index] = await S.adapter.getChapter(chapter, opts);
+        } catch (e) {
+          if (e.name === "CaptchaError") {
+            S.running = false;
+            saveResume();
+            showCaptcha();
+            setStatus(`Paused at chapter ${S.qpos + 1} (CAPTCHA).`);
+            return;
+          }
+          // per-chapter failure: record a stub and continue
+          console.error("chapter failed", chapter, e);
+          S.results[index] = { title: chapter.title || `Chapter ${index + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
         }
-      } catch (e) {
-        if (e.name === "CaptchaError") {
-          S.running = false;
-          saveResume();
-          showCaptcha();
-          setStatus(`Paused at chapter ${S.qpos + 1} (CAPTCHA).`);
-          return;
-        }
-        // per-chapter failure: record a stub and continue
-        console.error("chapter failed", chapter, e);
-        S.results[index] = { title: chapter.title || `Chapter ${index + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
       }
       S.qpos++;
       saveResume();
-      if (S.qpos < S.queue.length) await sleep(delay);
+      if (!cached && S.qpos < S.queue.length) await sleep(delay);
     }
     await finishPack();
   } finally {
@@ -484,7 +489,11 @@ async function init() {
   $("cover").addEventListener("input", updateCoverPreview);
   $("language").addEventListener("change", savePrefs);
   const cac = $("capAutoClose"); if (cac) cac.addEventListener("change", savePrefs);
-  const cp = $("coverPreview"); if (cp) cp.onerror = () => cp.classList.add("hidden");
+  const cp = $("coverPreview");
+  if (cp) {
+    cp.onerror = () => cp.classList.add("hidden");
+    cp.addEventListener("click", () => cp.classList.toggle("zoomed")); // click to enlarge/shrink
+  }
   $("selAll").addEventListener("click", () => document.querySelectorAll(".item input").forEach((c) => (c.checked = true)));
   $("selNone").addEventListener("click", () => document.querySelectorAll(".item input").forEach((c) => (c.checked = false)));
 
