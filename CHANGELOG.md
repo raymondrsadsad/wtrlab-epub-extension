@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.1 — 2026-09-23
+
+### Fixed
+- **Uniform Source alignment.** All fields now use one label column and share the
+  same left/right edges. Previously the Title/Author/Language/Filename grid used
+  narrower labels than the URL/Cover rows, so their boxes started at a different
+  x. Single-column layout removes the mismatch; narrow widths wrap cleanly.
+
 ## 1.3 — 2026-09-23
 
 ### Changed
