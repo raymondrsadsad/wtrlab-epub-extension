@@ -137,6 +137,14 @@ export function create() {
       const kw = meta("keywords") || "";
       const subjects = kw.split(/[,;]+/).map((s) => s.trim()).filter(Boolean).slice(0, 20);
 
+      // Detect the source language for a correct EPUB tag on "Original" (raw)
+      // downloads. Kept SEPARATE from `language` (which stays "en") so it never
+      // repoints the translation target — the popup only uses it for the tag.
+      const clEl = doc.querySelector('meta[http-equiv="content-language" i]');
+      const langRaw = (doc.documentElement && doc.documentElement.getAttribute("lang"))
+        || meta("og:locale") || (clEl && clEl.getAttribute("content")) || "";
+      const origLang = (String(langRaw).trim().toLowerCase().split(/[_-]/)[0].match(/^[a-z]{2,3}$/) || [null])[0];
+
       // collect chapter links (same-origin, chapter-like href), dedupe by href
       const pageOrigin = (() => { try { return new URL(url).origin; } catch { return ""; } })();
       const links = Array.from(doc.querySelectorAll("a[href]"));
@@ -179,7 +187,7 @@ export function create() {
         ? withNo.map((c) => ({ url: c.url, title: c.title }))
         : [{ url, title: title || "Chapter 1" }];
 
-      return { title, author, language: "en", cover, description, subjects, slug: "novel", chapterCount: chapters.length, chapters };
+      return { title, author, language: "en", origLang, cover, description, subjects, slug: "novel", chapterCount: chapters.length, chapters };
     },
 
     // opts: { service, lang }

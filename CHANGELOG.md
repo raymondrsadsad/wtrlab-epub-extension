@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.9 — 2026-09-25
+
+### Changed
+- **Stable book identity across rebuilds.** The EPUB’s `dc:identifier` is now derived
+  deterministically from the novel URL instead of a random UUID each build, so
+  re-downloading after new chapters (**Update EPUB**) replaces the book in your reader
+  instead of creating a duplicate. Falls back to a random id when no URL is available.
+- **Correct language tag on non-translated generic downloads.** The Generic adapter now
+  detects the source language (`<html lang>` / `og:locale` / `content-language`) and tags
+  “Original”-mode EPUBs with it (e.g. `ko`, `zh`) for better e-reader font/hyphenation.
+  Translation (→ English) is untouched — still tagged `en` — and a language you type
+  yourself always wins.
+
+## 1.8 — 2026-09-25
+
+### Added
+- **“Include cover & title page” option** (Options row, on by default). Untick it
+  to build a chapters-only EPUB with no cover page and no title/synopsis page —
+  handy when grabbing a single chapter. The choice is remembered between sessions.
+  Default is unchanged, so existing behaviour is preserved unless you turn it off.
+
 ## 1.7.2 — 2026-09-23
 
 ### Added

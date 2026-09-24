@@ -156,6 +156,8 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 .opt { display: inline-flex; align-items: center; gap: 8px; color: var(--fg); font-size: 13px; font-weight: 500; cursor: pointer; }
 .opt input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
 .opt em { color: var(--muted-2); font-style: normal; }
+.optcol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.optcol .opt { width: auto; }
 
 /* ---------- segmented translation control ---------- */
 .segmented { display: inline-flex; gap: 4px; padding: 4px; background: var(--field); border: 1px solid var(--border); border-radius: 11px; flex-wrap: wrap; }

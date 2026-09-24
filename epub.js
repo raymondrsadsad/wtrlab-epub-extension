@@ -103,6 +103,27 @@ function uuid() {
     return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
   });
 }
+// Deterministic UUID-shaped id from a seed string (cyrb128 → 128 bits of hex,
+// laid out as a v4-shaped UUID). Same seed → same id across rebuilds, so an
+// e-reader replaces the book on re-download instead of duplicating it.
+function uuidFromString(seed) {
+  let h1 = 1779033703, h2 = 3144134277, h3 = 1013904242, h4 = 2773480762;
+  const s = String(seed);
+  for (let i = 0; i < s.length; i++) {
+    const k = s.charCodeAt(i);
+    h1 = h2 ^ Math.imul(h1 ^ k, 597399067);
+    h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+    h3 = h4 ^ Math.imul(h3 ^ k, 951274213);
+    h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+  }
+  h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067);
+  h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+  h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
+  h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+  const hex = [h1, h2, h3, h4].map((n) => (n >>> 0).toString(16).padStart(8, "0")).join("");
+  // Force version (4) and variant (8-b) nibbles so it's a well-formed UUID.
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
 /**
  * Build an EPUB.
@@ -112,7 +133,7 @@ function uuid() {
  * Returns a Blob.
  */
 export function buildEpub(meta, chapters, images) {
-  const bookId = "urn:uuid:" + uuid();
+  const bookId = "urn:uuid:" + (meta.idSeed ? uuidFromString(meta.idSeed) : uuid());
   const lang = meta.language || "en";
   const files = [];
 
@@ -146,9 +167,13 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
 .synopsis p{text-indent:1.2em;margin:0 0 .6em}`,
   });
 
+  // Front matter (cover page + title/synopsis page) is included by default; a
+  // caller can pass includeFrontMatter:false to emit a chapters-only book.
+  const frontMatter = meta.includeFrontMatter !== false;
+
   // cover (image metadata + a real cover page so the book opens on it)
   let coverMeta = "", coverImageItem = "", coverPageItem = "", coverPageRef = "";
-  if (meta.cover && meta.cover.data) {
+  if (frontMatter && meta.cover && meta.cover.data) {
     const cname = "images/cover." + (meta.cover.ext || "jpg");
     files.push({ name: "OEBPS/" + cname, data: meta.cover.data });
     coverImageItem = `<item id="cover-image" href="${cname}" media-type="${meta.cover.mime || "image/jpeg"}" properties="cover-image"/>`;
@@ -165,18 +190,21 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
     coverPageRef = `<itemref idref="coverpage"/>`;
   }
 
-  // title page (title + author + optional synopsis)
-  const descHtml = meta.description ? `<div class="synopsis">${meta.description.split(/\n+/).map((p) => `<p>${xmlEscape(p)}</p>`).join("")}</div>` : "";
-  files.push({
-    name: "OEBPS/title.xhtml",
-    data: `<?xml version="1.0" encoding="UTF-8"?>
+  // title page (title + author + optional synopsis) — part of the front matter
+  let titlePageItem = "", titlePageRef = "";
+  if (frontMatter) {
+    const descHtml = meta.description ? `<div class="synopsis">${meta.description.split(/\n+/).map((p) => `<p>${xmlEscape(p)}</p>`).join("")}</div>` : "";
+    files.push({
+      name: "OEBPS/title.xhtml",
+      data: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
 <head><meta charset="utf-8"/><title>${xmlEscape(meta.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body class="titlepage" epub:type="titlepage"><h1 class="bt">${xmlEscape(meta.title)}</h1><p class="ba">${xmlEscape(meta.author || "Unknown")}</p>${descHtml}</body></html>`,
-  });
-  const titlePageItem = `<item id="titlepage" href="title.xhtml" media-type="application/xhtml+xml"/>`;
-  const titlePageRef = `<itemref idref="titlepage"/>`;
+    });
+    titlePageItem = `<item id="titlepage" href="title.xhtml" media-type="application/xhtml+xml"/>`;
+    titlePageRef = `<itemref idref="titlepage"/>`;
+  }
 
   // images
   const imageItems = [];

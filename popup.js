@@ -48,6 +48,7 @@ function savePrefs() {
       lang: ($("language").value || "").trim(),
       autoClose: $("capAutoClose") ? $("capAutoClose").checked : true,
       parallel: $("parallel") ? $("parallel").checked : false,
+      frontMatter: $("frontMatter") ? $("frontMatter").checked : true,
       theme: document.documentElement.getAttribute("data-theme") || "dark",
     }});
   } catch (e) { /* ignore */ }
@@ -504,10 +505,13 @@ async function runPack() {
 async function finishPack() {
   setStatus("Building EPUB (images + packaging)…");
   setBar(1);
-  // cover
+  // Front matter (cover page + title/synopsis page) is opt-out: when unticked
+  // the EPUB is chapters only — handy for grabbing a single chapter.
+  const frontMatter = $("frontMatter") ? $("frontMatter").checked : true;
+  // cover (only fetched when front matter is included)
   let cover = null;
   const coverUrl = $("cover").value.trim();
-  if (coverUrl) {
+  if (frontMatter && coverUrl) {
     try {
       const res = await fetchT(coverUrl, { credentials: "include" });
       const blob = await res.blob();
@@ -525,13 +529,24 @@ async function finishPack() {
     chapters.push({ title: ch.title, xhtmlBody: body });
   }
   const images = Object.values(S.imgCache).map((r) => ({ id: r.id, name: r.name, mime: r.mime, data: r.data }));
+  // Language tag: the field value as always, except a non-translated generic
+  // download uses the detected source language — but only if the user hasn't
+  // edited the field away from its auto-filled "en" (never touches translate
+  // mode, which keeps "en" for both the tag and the translation target).
+  let language = $("language").value.trim() || "en";
+  if (S.adapter && S.adapter.id === "generic" && S.service === "raw"
+      && S.meta && S.meta.origLang && language === "en") {
+    language = S.meta.origLang;
+  }
   const meta = {
     title: $("title").value.trim() || "Untitled",
     author: $("author").value.trim() || "Unknown",
-    language: $("language").value.trim() || "en",
+    language,
     description: (S.meta && S.meta.description) || "",
     subjects: (S.meta && S.meta.subjects) || [],
     cover,
+    includeFrontMatter: frontMatter,
+    idSeed: S.currentUrl || null,
   };
   const blob = buildEpub(meta, chapters, images);
   const fname = sanitizeName($("filename").value) + ".epub";
@@ -615,6 +630,7 @@ function loadPrefsAndResume() {
           if (p.lang) $("language").value = p.lang;
           if (typeof p.autoClose === "boolean" && $("capAutoClose")) $("capAutoClose").checked = p.autoClose;
           if (typeof p.parallel === "boolean" && $("parallel")) $("parallel").checked = p.parallel;
+          if (typeof p.frontMatter === "boolean" && $("frontMatter")) $("frontMatter").checked = p.frontMatter;
           applyTheme(p.theme === "light" ? "light" : "dark");
         }
         if (o && Array.isArray(o.recent)) renderRecent(o.recent);
@@ -759,6 +775,7 @@ async function init() {
     $("url").value = v; e.target.value = ""; analyse();
   });
   $("parallel").addEventListener("change", savePrefs);
+  if ($("frontMatter")) $("frontMatter").addEventListener("change", savePrefs);
   $("cover").addEventListener("input", updateCoverPreview);
   $("language").addEventListener("change", savePrefs);
   const cac = $("capAutoClose"); if (cac) cac.addEventListener("change", savePrefs);
