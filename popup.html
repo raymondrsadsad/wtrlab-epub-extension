@@ -39,13 +39,13 @@
     <section class="card">
       <div class="card-head"><h2>Source</h2></div>
       <div class="row url-row">
-        <label>Starting URL</label>
+        <label for="url">Starting URL</label>
         <input id="url" type="text" placeholder="Paste a novel or chapter URL" />
         <button id="analyse" class="primary">Load &amp; Analyse</button>
       </div>
 
       <div id="recentRow" class="row recent-row hidden">
-        <label>Recent</label>
+        <label for="recentToggle">Recent</label>
         <div class="recent-dd">
           <button id="recentToggle" class="recent-toggle" type="button" aria-expanded="false">
             <span class="recent-toggle-label">Recent novels…</span>
@@ -57,7 +57,7 @@
       </div>
 
       <div class="row">
-        <label>Adapter</label>
+        <label for="adapter">Adapter</label>
         <select id="adapter">
           <option value="auto">Auto-detect</option>
           <option value="wtrlab">wtr-lab</option>
@@ -65,19 +65,19 @@
         </select>
       </div>
 
-      <div class="row"><label>Title</label><input id="title" type="text" /></div>
-      <div class="row"><label>Author</label><input id="author" type="text" /></div>
-      <div class="row"><label>Language</label><input id="language" type="text" value="en" /></div>
-      <div class="row"><label>Filename</label><input id="filename" type="text" /></div>
-      <div class="row"><label>Cover</label><input id="cover" type="text" /><img id="coverPreview" class="coverPreview hidden" alt="cover" /></div>
+      <div class="row"><label for="title">Title</label><input id="title" type="text" /></div>
+      <div class="row"><label for="author">Author</label><input id="author" type="text" /></div>
+      <div class="row"><label for="language">Language</label><input id="language" type="text" value="en" /></div>
+      <div class="row"><label for="filename">Filename</label><input id="filename" type="text" /></div>
+      <div class="row"><label for="cover">Cover</label><input id="cover" type="text" /><img id="coverPreview" class="coverPreview hidden" alt="cover" /></div>
 
       <div id="modeRow" class="row hidden">
-        <label>Translation</label>
+        <span class="rowlbl">Translation</span>
         <div id="modes" class="modes segmented"></div>
       </div>
 
       <div class="row">
-        <label>Options</label>
+        <span class="rowlbl">Options</span>
         <div class="optcol">
           <label class="opt"><input id="parallel" type="checkbox" /> <span>Faster parallel fetch <em>(quicker, but triggers more CAPTCHAs)</em></span></label>
           <label class="opt"><input id="includeTitlePage" type="checkbox" checked /> <span>Include cover &amp; title page <em>(cover, title, author &amp; synopsis inside the book)</em></span></label>
@@ -85,7 +85,7 @@
       </div>
 
       <div class="row import-row">
-        <label>Update</label>
+        <span class="rowlbl">Update</span>
         <div class="import-col">
           <div class="import-line">
             <button id="importEpub" class="ghost sm" type="button" title="Load an EPUB you already saved, then fetch only the newly-released chapters">⬆ Import EPUB…</button>
@@ -131,9 +131,9 @@
     <section class="card">
       <div class="card-head"><h2>Chapters</h2><span id="count" class="count">0</span></div>
       <div class="range">
-        <label>First</label>
+        <label for="first">First</label>
         <select id="first"></select>
-        <label>Last</label>
+        <label for="last">Last</label>
         <select id="last"></select>
         <span class="range-spacer"></span>
         <button id="selNew" class="ghost sm hidden">Select new</button>
@@ -158,7 +158,7 @@
         <div class="card-head"><h2>EPUB Merger</h2><span id="mergeCount" class="count">0</span></div>
         <div class="import-hint"><em>Combine EPUBs you already have — fully offline, no data used. Add two or more files, arrange the chapters, then export one merged book.</em></div>
         <div class="row">
-          <label>Files</label>
+          <span class="rowlbl">Files</span>
           <div class="import-col">
             <div class="import-line">
               <button id="mergeAdd" class="ghost sm" type="button">⬆ Add EPUBs…</button>
@@ -170,10 +170,10 @@
             </div>
           </div>
         </div>
-        <div class="row"><label>Title</label><input id="mergeTitle" type="text" placeholder="Merged book title" /></div>
-        <div class="row"><label>Author</label><input id="mergeAuthor" type="text" /></div>
-        <div class="row"><label>Language</label><input id="mergeLang" type="text" value="en" /></div>
-        <div class="row"><label>Cover</label><span id="mergeCoverInfo" class="import-info">from first file</span><img id="mergeCoverPreview" class="coverPreview hidden" alt="cover" /></div>
+        <div class="row"><label for="mergeTitle">Title</label><input id="mergeTitle" type="text" placeholder="Merged book title" /></div>
+        <div class="row"><label for="mergeAuthor">Author</label><input id="mergeAuthor" type="text" /></div>
+        <div class="row"><label for="mergeLang">Language</label><input id="mergeLang" type="text" value="en" /></div>
+        <div class="row"><span class="rowlbl">Cover</span><span id="mergeCoverInfo" class="import-info">from first file</span><img id="mergeCoverPreview" class="coverPreview hidden" alt="cover" /></div>
       </section>
 
       <section class="card packbox">

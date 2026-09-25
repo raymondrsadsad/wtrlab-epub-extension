@@ -99,7 +99,7 @@ body {
 /* ---------- form rows ---------- */
 .row { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; min-width: 0; }
 .row:last-child { margin-bottom: 0; }
-.row label {
+.row label, .row .rowlbl {
   width: 120px; flex: none; color: var(--muted); font-size: 13px; font-weight: 500;
   text-align: right;
 }
@@ -376,7 +376,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 @media (max-width: 560px) {
   .wrap { padding: 16px 12px 40px; }
   .row { flex-wrap: wrap; gap: 6px 10px; }
-  .row label { width: 100%; text-align: left; }
+  .row label, .row .rowlbl { width: 100%; text-align: left; }
   input[type="text"] { flex: 1 1 100%; }
   .url-row button, .range select { width: 100%; }
   .coverPreview { order: 3; }

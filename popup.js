@@ -62,15 +62,38 @@ function savePrefs() {
   } catch (e) { /* ignore */ }
 }
 
+// Canonical novel URL for de-duping the recent list: drop ?query (…?tab=toc,
+// ?service=…) and #hash, and collapse a wtr-lab chapter URL to its novel page.
+function canonUrl(u) {
+  try {
+    const url = new URL(u);
+    url.hash = ""; url.search = "";
+    url.pathname = url.pathname.replace(/\/chapter-\d+\/?$/i, "").replace(/\/+$/, "") || "/";
+    return url.toString();
+  } catch (e) { return String(u || "").split(/[?#]/)[0].replace(/\/+$/, ""); }
+}
+// Collapse duplicate recents (same novel via different query strings), newest kept.
+function dedupeRecent(list) {
+  const seen = new Set(), out = [];
+  for (const r of (list || [])) {
+    if (!r || !r.url) continue;
+    const k = canonUrl(r.url);
+    if (seen.has(k)) continue;
+    seen.add(k); out.push({ ...r, url: k });
+  }
+  return out;
+}
+
 // Recent novels list (newest first, capped).
 function addRecent(url, title) {
   if (!store || !url) return;
+  const cu = canonUrl(url);
   try {
     store.get("recent", (o) => {
       let list = (o && Array.isArray(o.recent)) ? o.recent : [];
-      list = list.filter((r) => r && r.url !== url);
-      list.unshift({ url, title: title || url, ts: Date.now() });
-      list = list.slice(0, 8);
+      list = list.filter((r) => r && canonUrl(r.url) !== cu);
+      list.unshift({ url: cu, title: title || cu, ts: Date.now() });
+      list = dedupeRecent(list).slice(0, 8);
       store.set({ recent: list });
       renderRecent(list);
     });
@@ -79,10 +102,11 @@ function addRecent(url, title) {
 // Remove a single recent novel by url.
 function removeRecent(url) {
   if (!store || !url) return;
+  const cu = canonUrl(url);
   try {
     store.get("recent", (o) => {
       let list = (o && Array.isArray(o.recent)) ? o.recent : [];
-      list = list.filter((r) => r && r.url !== url);
+      list = list.filter((r) => r && canonUrl(r.url) !== cu);
       store.set({ recent: list });
       renderRecent(list);
     });
@@ -1023,7 +1047,11 @@ function loadPrefsAndResume() {
           if ($("includeTitlePage")) $("includeTitlePage").checked = tp;
           applyTheme(p.theme === "light" ? "light" : "dark");
         }
-        if (o && Array.isArray(o.recent)) renderRecent(o.recent);
+        if (o && Array.isArray(o.recent)) {
+          const deduped = dedupeRecent(o.recent);
+          if (deduped.length !== o.recent.length) { try { store.set({ recent: deduped }); } catch (e) {} }
+          renderRecent(deduped);
+        }
         if (o && o.counts && typeof o.counts === "object") S.counts = o.counts;
         const r = o && o.resume;
         const total = r && (r.total || (r.selected ? r.selected.length : 0));
