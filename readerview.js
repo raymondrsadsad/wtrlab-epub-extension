@@ -11,7 +11,7 @@ const R = {
   imgUrls: new Map(), coverUrl: null,
   chapter: 0, segEls: [], segIndex: 0,
   speaking: false, paused: false,
-  rate: 1, voice: null, userVoice: null, voices: [], utter: null, token: 0,
+  rate: 1, voice: null, userVoice: null, voices: [], utters: [], enqueued: 0, token: 0,
   saveTimer: null,
   follow: true, hl: true, collapsed: false, pos: null,
   provider: null,   // live mode: (index) => Promise<{title, xhtmlBody, images}>
@@ -201,8 +201,14 @@ function highlight(i, scroll) {
 }
 
 // ---- text-to-speech ----
+// Continuous playback: keep several upcoming sentences queued in the synth so it
+// speaks them back-to-back with no artificial gap (the old one-at-a-time
+// onend→cancel→speak loop caused the audible pause between sentences). Each
+// utterance's onstart drives the highlight; onend just tops the buffer back up.
+const TTS_AHEAD = 6;
 function speakFrom(i) {
   synth.cancel();
+  R.utters = [];
   if (i >= R.segEls.length) { // end of chapter → next chapter, or finish
     if (R.chapter < R.book.chapters.length - 1) loadChapter(R.chapter + 1, 0, true);
     else { stopTts(); setStatus("Finished the book."); }
@@ -210,16 +216,28 @@ function speakFrom(i) {
   }
   if (i < 0) i = 0;
   R.segIndex = i; R.speaking = true; R.paused = false;
+  R.enqueued = i;
+  const t = ++R.token;
   highlight(i); saveProgressSoon();
-  const myToken = ++R.token;
-  const u = new SpeechSynthesisUtterance((R.segEls[i].textContent || "").trim());
+  for (let n = 0; n < TTS_AHEAD && R.enqueued < R.segEls.length; n++) enqueueSeg(R.enqueued++, t);
+  updatePlayBtn();
+}
+function enqueueSeg(k, t) {
+  const u = new SpeechSynthesisUtterance((R.segEls[k].textContent || "").trim());
   u.rate = R.rate;
   if (R.voice) { u.voice = R.voice; u.lang = R.voice.lang; }
-  u.onend = () => { if (myToken !== R.token || !R.speaking || R.paused) return; speakFrom(R.segIndex + 1); };
-  u.onerror = () => { if (myToken !== R.token || !R.speaking) return; speakFrom(R.segIndex + 1); };
-  R.utter = u; // keep a reference so it isn't garbage-collected mid-speech
+  u.onstart = () => { if (t !== R.token) return; R.segIndex = k; highlight(k); saveProgressSoon(); };
+  u.onend = () => {
+    if (t !== R.token || R.paused) return;
+    if (R.enqueued < R.segEls.length) enqueueSeg(R.enqueued++, t);   // keep the buffer full
+    else if (k === R.segEls.length - 1) {                            // last line spoken → advance
+      if (R.chapter < R.book.chapters.length - 1) loadChapter(R.chapter + 1, 0, true);
+      else { stopTts(); setStatus("Finished the book."); }
+    }
+  };
+  u.onerror = () => { if (t !== R.token) return; if (R.enqueued < R.segEls.length) enqueueSeg(R.enqueued++, t); };
+  R.utters.push(u); // hold refs so utterances aren't garbage-collected mid-speech
   synth.speak(u);
-  updatePlayBtn();
 }
 function togglePlay() {
   if (!R.book) return;
@@ -231,6 +249,7 @@ function togglePlay() {
 function stopTts() {
   R.token++;
   R.speaking = false; R.paused = false;
+  R.utters = []; R.enqueued = 0;
   try { synth.cancel(); } catch (_) {}
   updatePlayBtn();
 }
@@ -414,8 +433,9 @@ export function initRead() {
   $("ttsStop").addEventListener("click", stopTts);
   $("ttsPrev").addEventListener("click", () => stepLine(-1));
   $("ttsNext").addEventListener("click", () => stepLine(1));
-  $("ttsVoice").addEventListener("change", (e) => { R.voice = R.voices[+e.target.value] || null; R.userVoice = R.voice && R.voice.name; saveReaderPrefs(); });
-  $("ttsRate").addEventListener("input", (e) => { R.rate = +e.target.value; $("ttsRateVal").textContent = R.rate.toFixed(1) + "×"; saveReaderPrefs(); });
+  $("ttsVoice").addEventListener("change", (e) => { R.voice = R.voices[+e.target.value] || null; R.userVoice = R.voice && R.voice.name; saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); });
+  $("ttsRate").addEventListener("input", (e) => { R.rate = +e.target.value; $("ttsRateVal").textContent = R.rate.toFixed(1) + "×"; });
+  $("ttsRate").addEventListener("change", () => { saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); }); // apply new rate from the current line
   $("ttsFollow").addEventListener("change", (e) => { R.follow = e.target.checked; saveReaderPrefs(); if (R.follow) highlight(R.segIndex); });
   $("ttsHighlight").addEventListener("change", (e) => { R.hl = e.target.checked; highlight(R.segIndex, false); saveReaderPrefs(); });
   $("ttsCollapse").addEventListener("click", () => { R.collapsed = !R.collapsed; $("ttsPlayer").classList.toggle("collapsed", R.collapsed); $("ttsCollapse").textContent = R.collapsed ? "▸" : "▾"; saveReaderPrefs(); });
