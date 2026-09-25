@@ -48,7 +48,9 @@
   --ring: 0 0 0 3px rgba(95, 112, 152, .22);
 }
 * { box-sizing: border-box; }
-html, body { overflow-x: hidden; }
+/* clip (not hidden) so horizontal overflow is contained WITHOUT turning the root
+   into a scroll container — which would break `position: sticky` for the reader bar */
+html, body { overflow-x: clip; }
 body {
   margin: 0;
   color: var(--fg);

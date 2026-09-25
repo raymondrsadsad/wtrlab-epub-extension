@@ -578,7 +578,9 @@ function renderReadService() {
 
 async function readAloud() {
   if (!S.chapters.length) {
-    if (!$("url").value.trim()) { setStatus("Load a novel URL first."); return; }
+    const u = $("url").value.trim();
+    if (!u) { setStatus("Load a novel URL first."); return; }
+    if (!/^https?:\/\//i.test(u)) { setStatus("Open this on a novel chapter page first — the current page isn't a fetchable novel URL."); return; }
     await analyse();
     if (!S.chapters.length) return; // analyse failed / no chapters
   }
