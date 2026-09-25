@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.11.1 — 2026-09-26
+
+### Changed
+- **Mobile-friendly reader.** Fixed the reading view overflowing on phones. Contents is
+  now a **☰ hamburger → left slide-in drawer** (on mobile and desktop), freeing the full
+  width for text. **Immersive reading:** scrolling into the text hides the top bar and the
+  floating player; scrolling up — or **tapping the page** — brings them back. TTS
+  auto-follow scrolling no longer flickers the controls.
+
 ## 1.11 — 2026-09-25
 
 ### Added

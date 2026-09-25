@@ -16,6 +16,9 @@ const R = {
   follow: true, hl: true, collapsed: false, pos: null,
   provider: null,   // live mode: (index) => Promise<{title, xhtmlBody, images}>
   loading: false,   // a chapter fetch is in flight (guards rapid Next/Prev)
+  immersive: false, // chrome (top bar + player) hidden while reading
+  lastY: 0,         // last scroll position (for hide/show direction)
+  progScroll: 0,    // timestamp of a programmatic scroll (TTS follow) to ignore
 };
 
 const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
@@ -84,9 +87,27 @@ function renderToc() {
     row.className = "item";
     row.dataset.i = i;
     row.innerHTML = `<span class="ttl">${escapeHtml(ch.title || "Chapter " + (i + 1))}</span>`;
-    row.addEventListener("click", () => loadChapter(i, 0, false));
+    row.addEventListener("click", () => { closeDrawer(); loadChapter(i, 0, false); });
     toc.appendChild(row);
   });
+}
+
+// ---- Contents drawer + immersive chrome ----
+function openDrawer() { $("readDrawer").classList.add("open"); $("readBackdrop").classList.add("open"); }
+function closeDrawer() { $("readDrawer").classList.remove("open"); $("readBackdrop").classList.remove("open"); }
+function setImmersive(on) {
+  R.immersive = on;
+  $("modeRead").classList.toggle("immersive", on);
+}
+// Programmatic scroll (e.g. TTS follow) shouldn't toggle the chrome.
+function markProgScroll() { R.progScroll = Date.now(); }
+function onReaderScroll() {
+  if (Date.now() - R.progScroll < 700) { R.lastY = window.scrollY; return; }
+  const y = window.scrollY, dy = y - R.lastY;
+  if (Math.abs(dy) < 8) return;
+  if (dy > 0 && y > 60) { if (!R.immersive) setImmersive(true); }   // scrolling down → hide
+  else if (dy < 0) { if (R.immersive) setImmersive(false); }         // scrolling up → show
+  R.lastY = y;
 }
 
 // ---- render a chapter + build speakable segments ----
@@ -164,16 +185,17 @@ async function renderLoaded(i, seg, speak) {
   // highlight active TOC row
   $("readToc").querySelectorAll(".item").forEach((r) => r.classList.toggle("current", +r.dataset.i === i));
 
+  setImmersive(false); R.lastY = 0; // new chapter → show controls
   R.segIndex = Math.min(Math.max(0, seg || 0), Math.max(0, R.segEls.length - 1));
   highlight(R.segIndex, !speak);
   saveProgressSoon();
-  if (speak) speakFrom(R.segIndex); else { wrap.scrollTop = 0; }
+  if (speak) speakFrom(R.segIndex); else { window.scrollTo(0, 0); }
 }
 
 function highlight(i, scroll) {
   R.segEls.forEach((el, k) => el.classList.toggle("speaking", R.hl && k === i));
   const el = R.segEls[i];
-  if (el && R.follow && scroll !== false) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  if (el && R.follow && scroll !== false) { markProgScroll(); el.scrollIntoView({ block: "center", behavior: "smooth" }); }
   const now = $("ttsNow");
   if (now && R.segEls.length) now.textContent = `Ch ${R.chapter + 1} · line ${i + 1}`;
 }
@@ -382,7 +404,7 @@ export function readerReload() {
 }
 
 // Called by popup.js when the user leaves Read mode or closes the page.
-export function readerStop() { stopTts(); saveProgress(); }
+export function readerStop() { stopTts(); saveProgress(); closeDrawer(); setImmersive(false); }
 
 export function initRead() {
   $("readOpen").addEventListener("click", () => $("readFile").click());
@@ -416,12 +438,22 @@ export function initRead() {
   $("readPrev").addEventListener("click", () => loadChapter(R.chapter - 1, 0, R.speaking));
   $("readNext").addEventListener("click", () => loadChapter(R.chapter + 1, 0, R.speaking));
 
-  // click a line to speak from there
+  // Contents drawer (hamburger)
+  $("readMenu").addEventListener("click", () => { $("readDrawer").classList.contains("open") ? closeDrawer() : openDrawer(); });
+  $("readDrawerClose").addEventListener("click", closeDrawer);
+  $("readBackdrop").addEventListener("click", closeDrawer);
+
+  // Tap the reading area: while immersed → reveal controls (no TTS start);
+  // otherwise, tapping a line speaks from there.
   $("readContent").addEventListener("click", (e) => {
+    if (R.immersive) { setImmersive(false); R.lastY = window.scrollY; return; }
     const seg = e.target.closest && e.target.closest(".seg");
     if (!seg) return;
     speakFrom(+seg.dataset.seg);
   });
+
+  // Auto-hide chrome on scroll (down hides, up shows); ignores TTS-follow scrolls.
+  window.addEventListener("scroll", () => { if (!$("modeRead").hidden) onReaderScroll(); }, { passive: true });
 
   if (typeof synth !== "undefined" && synth) synth.onvoiceschanged = loadVoices;
 
@@ -430,6 +462,7 @@ export function initRead() {
     if ($("modeRead").hidden) return;
     const tag = (document.activeElement && document.activeElement.tagName) || "";
     if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
+    if (e.key === "Escape") { if ($("readDrawer").classList.contains("open")) { closeDrawer(); return; } }
     if (e.key === " ") { e.preventDefault(); togglePlay(); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); loadChapter(R.chapter - 1, 0, R.speaking); }
     else if (e.key === "ArrowRight") { e.preventDefault(); loadChapter(R.chapter + 1, 0, R.speaking); }

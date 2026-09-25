@@ -248,20 +248,21 @@
         </div>
       </div>
 
+      <div id="readBackdrop" class="reader-backdrop"></div>
+      <aside id="readDrawer" class="reader-drawer">
+        <div class="drawer-head"><span class="ttl">Contents</span><button id="readDrawerClose" class="icon-btn" title="Close">✕</button></div>
+        <div id="readToc" class="list"></div>
+      </aside>
+
       <section class="card reader-body hidden" id="readBodyCard">
-        <div class="reader-grid">
-          <aside class="reader-toc">
-            <div class="tablehead"><span class="ttl">Contents</span></div>
-            <div id="readToc" class="list"></div>
-          </aside>
-          <div class="reader-pane">
-            <div class="reader-navbar">
-              <button id="readPrev" class="ghost sm" title="Previous chapter (←)">← Prev</button>
-              <span id="readChapTitle" class="read-chaptitle"></span>
-              <button id="readNext" class="ghost sm" title="Next chapter (→)">Next →</button>
-            </div>
-            <article id="readContent" class="reader-content"></article>
+        <div class="reader-pane">
+          <div class="reader-navbar">
+            <button id="readMenu" class="icon-btn" title="Contents" aria-label="Contents">☰</button>
+            <button id="readPrev" class="ghost sm" title="Previous chapter (←)">← Prev</button>
+            <span id="readChapTitle" class="read-chaptitle"></span>
+            <button id="readNext" class="ghost sm" title="Next chapter (→)">Next →</button>
           </div>
+          <article id="readContent" class="reader-content"></article>
         </div>
       </section>
       <section class="card"><div id="readStatus" class="status">Open an EPUB from your device to start reading.</div></section>
