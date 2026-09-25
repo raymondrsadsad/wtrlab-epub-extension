@@ -11,11 +11,12 @@ const R = {
   imgUrls: new Map(), coverUrl: null,
   chapter: 0, segEls: [], segIndex: 0,
   speaking: false, paused: false,
-  rate: 1, voice: null, userVoice: null, voices: [], utters: [], enqueued: 0, token: 0,
+  rate: 1, voice: null, userVoice: null, voices: [], utters: [], chunks: [], chunkQueue: 0, token: 0,
   saveTimer: null,
   follow: true, hl: true, collapsed: false, pos: null,
   provider: null,   // live mode: (index) => Promise<{title, xhtmlBody, images}>
   loading: false,   // a chapter fetch is in flight (guards rapid Next/Prev)
+  tocReversed: false, // Contents list shown newest-first (357→1)
   immersive: false, // chrome (top bar + player) hidden while reading
   lastY: 0,         // last scroll position (for hide/show direction)
   progScroll: 0,    // timestamp of a programmatic scroll (TTS follow) to ignore
@@ -82,9 +83,12 @@ async function openFile(file) {
 function renderToc() {
   const toc = $("readToc");
   toc.innerHTML = "";
-  R.book.chapters.forEach((ch, i) => {
+  const order = R.book.chapters.map((_, i) => i);
+  if (R.tocReversed) order.reverse();
+  order.forEach((i) => {
+    const ch = R.book.chapters[i];
     const row = document.createElement("div");
-    row.className = "item";
+    row.className = "item" + (i === R.chapter ? " current" : "");
     row.dataset.i = i;
     row.innerHTML = `<span class="ttl">${escapeHtml(ch.title || "Chapter " + (i + 1))}</span>`;
     row.addEventListener("click", () => { closeDrawer(); loadChapter(i, 0, false); });
@@ -181,6 +185,7 @@ async function renderLoaded(i, seg, speak) {
     img.removeAttribute("srcset");
   });
   R.segEls = buildSegments(wrap);
+  R.chunks = []; // rebuilt lazily by speakFrom for this chapter
   $("readChapTitle").textContent = ch.title || ("Chapter " + (i + 1));
   // highlight active TOC row
   $("readToc").querySelectorAll(".item").forEach((r) => r.classList.toggle("current", +r.dataset.i === i));
@@ -201,11 +206,34 @@ function highlight(i, scroll) {
 }
 
 // ---- text-to-speech ----
-// Continuous playback: keep several upcoming sentences queued in the synth so it
-// speaks them back-to-back with no artificial gap (the old one-at-a-time
-// onend→cancel→speak loop caused the audible pause between sentences). Each
-// utterance's onstart drives the highlight; onend just tops the buffer back up.
-const TTS_AHEAD = 6;
+// Continuous playback like wtr-lab's reader: speak a whole paragraph (capped in
+// length) as ONE utterance, so there are no per-sentence utterance boundaries for
+// the engine to pause at. The per-sentence highlight is driven by `onboundary`
+// (word position) events; only ~2 chunks are queued ahead for smooth transitions.
+const MAX_CHUNK = 500;         // chars: split long paragraphs to dodge the engine's long-utterance cutoff
+const TTS_AHEAD_CHUNKS = 2;
+
+// Group the chapter's sentence segments into speakable chunks (one per paragraph,
+// split when a paragraph exceeds MAX_CHUNK). Each chunk maps char offsets → segIndex.
+function buildChunks() {
+  R.chunks = [];
+  let cur = null, curBlock = null;
+  R.segEls.forEach((el, gi) => {
+    const block = el.parentElement;
+    if (!cur || block !== curBlock || cur.text.length >= MAX_CHUNK) {
+      cur = { text: "", parts: [] }; R.chunks.push(cur); curBlock = block;
+    }
+    cur.parts.push({ gi, start: cur.text.length });
+    cur.text += (el.textContent || "");
+  });
+}
+function segLocation(i) {
+  for (let c = 0; c < R.chunks.length; c++) {
+    const parts = R.chunks[c].parts;
+    for (let p = 0; p < parts.length; p++) if (parts[p].gi === i) return { c, start: parts[p].start };
+  }
+  return { c: 0, start: 0 };
+}
 function speakFrom(i) {
   synth.cancel();
   R.utters = [];
@@ -215,27 +243,42 @@ function speakFrom(i) {
     return;
   }
   if (i < 0) i = 0;
+  if (!R.chunks.length) buildChunks();
   R.segIndex = i; R.speaking = true; R.paused = false;
-  R.enqueued = i;
+  const loc = segLocation(i);
   const t = ++R.token;
   highlight(i); saveProgressSoon();
-  for (let n = 0; n < TTS_AHEAD && R.enqueued < R.segEls.length; n++) enqueueSeg(R.enqueued++, t);
+  R.chunkQueue = loc.c;
+  for (let n = 0; n < TTS_AHEAD_CHUNKS && R.chunkQueue < R.chunks.length; n++, R.chunkQueue++) {
+    enqueueChunk(R.chunkQueue, R.chunkQueue === loc.c ? loc.start : 0, t);
+  }
   updatePlayBtn();
 }
-function enqueueSeg(k, t) {
-  const u = new SpeechSynthesisUtterance((R.segEls[k].textContent || "").trim());
+function enqueueChunk(c, startChar, t) {
+  const chunk = R.chunks[c];
+  const text = chunk.text.slice(startChar).replace(/\s+/g, " ").trim();
+  const parts = chunk.parts.filter((p) => p.start >= startChar).map((p) => ({ gi: p.gi, off: p.start - startChar }));
+  if (!text) return; // nothing to say in this slice
+  const u = new SpeechSynthesisUtterance(text);
   u.rate = R.rate;
   if (R.voice) { u.voice = R.voice; u.lang = R.voice.lang; }
-  u.onstart = () => { if (t !== R.token) return; R.segIndex = k; highlight(k); saveProgressSoon(); };
+  let pIdx = 0;
+  const setSeg = (gi) => { if (gi != null && gi !== R.segIndex) { R.segIndex = gi; highlight(gi); saveProgressSoon(); } };
+  u.onstart = () => { if (t !== R.token) return; if (parts.length) setSeg(parts[0].gi); };
+  u.onboundary = (e) => { // move the highlight to the sentence containing the spoken word
+    if (t !== R.token) return;
+    while (pIdx + 1 < parts.length && parts[pIdx + 1].off <= e.charIndex) pIdx++;
+    if (parts[pIdx]) setSeg(parts[pIdx].gi);
+  };
   u.onend = () => {
     if (t !== R.token || R.paused) return;
-    if (R.enqueued < R.segEls.length) enqueueSeg(R.enqueued++, t);   // keep the buffer full
-    else if (k === R.segEls.length - 1) {                            // last line spoken → advance
+    if (R.chunkQueue < R.chunks.length) { enqueueChunk(R.chunkQueue, 0, t); R.chunkQueue++; }
+    else if (c === R.chunks.length - 1) { // finished the last chunk → advance chapter
       if (R.chapter < R.book.chapters.length - 1) loadChapter(R.chapter + 1, 0, true);
       else { stopTts(); setStatus("Finished the book."); }
     }
   };
-  u.onerror = () => { if (t !== R.token) return; if (R.enqueued < R.segEls.length) enqueueSeg(R.enqueued++, t); };
+  u.onerror = () => { if (t !== R.token) return; if (R.chunkQueue < R.chunks.length) { enqueueChunk(R.chunkQueue, 0, t); R.chunkQueue++; } };
   R.utters.push(u); // hold refs so utterances aren't garbage-collected mid-speech
   synth.speak(u);
 }
@@ -249,7 +292,7 @@ function togglePlay() {
 function stopTts() {
   R.token++;
   R.speaking = false; R.paused = false;
-  R.utters = []; R.enqueued = 0;
+  R.utters = []; R.chunkQueue = 0;
   try { synth.cancel(); } catch (_) {}
   updatePlayBtn();
 }
@@ -344,7 +387,7 @@ function saveProgress() {
 // ---- reader UI prefs (player position, toggles, voice, rate) ----
 function saveReaderPrefs() {
   if (!store) return;
-  try { store.set({ readerPrefs: { follow: R.follow, hl: R.hl, rate: R.rate, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed } }); } catch (_) {}
+  try { store.set({ readerPrefs: { follow: R.follow, hl: R.hl, rate: R.rate, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed, tocReversed: R.tocReversed } }); } catch (_) {}
 }
 function applyPlayerPos() {
   const pl = $("ttsPlayer");
@@ -451,6 +494,7 @@ export function initRead() {
       if (p.voiceName) R.userVoice = p.voiceName;
       if (p.pos) R.pos = p.pos;
       R.collapsed = !!p.collapsed;
+      R.tocReversed = !!p.tocReversed;
       applyPlayerPos();
     });
   } catch (_) {}
@@ -462,6 +506,7 @@ export function initRead() {
   $("readMenu").addEventListener("click", () => { $("readDrawer").classList.contains("open") ? closeDrawer() : openDrawer(); });
   $("readDrawerClose").addEventListener("click", closeDrawer);
   $("readBackdrop").addEventListener("click", closeDrawer);
+  $("readTocReverse").addEventListener("click", () => { R.tocReversed = !R.tocReversed; renderToc(); saveReaderPrefs(); });
 
   // Tap the reading area: while immersed → reveal controls (no TTS start);
   // otherwise, tapping a line speaks from there.

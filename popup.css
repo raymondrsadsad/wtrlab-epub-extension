@@ -365,8 +365,8 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
   display: flex; flex-direction: column; min-height: 0;
 }
 .reader-drawer.open { transform: translateX(0); }
-.reader-drawer .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); }
-.reader-drawer .drawer-head .ttl { font-weight: 700; }
+.reader-drawer .drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.reader-drawer .drawer-head .ttl { font-weight: 700; flex: 1; }
 .reader-drawer .list { flex: 1; max-height: none; padding: 4px; }
 .reader-drawer .item { padding: 10px 12px; }
 .reader-drawer .item.current { background: var(--accent-soft); border-radius: 8px; }
