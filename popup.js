@@ -3,6 +3,7 @@ import { buildEpub } from "./epub.js";
 import { parseEpub } from "./epubread.js";
 import { initMerge } from "./mergeview.js";
 import { initRead, readerStop, openLive, readerReload } from "./readerview.js";
+import { translateAll } from "./adapters/translate.js";
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -40,7 +41,11 @@ const S = {
   newFrom: null,      // index from which chapters are "new" this analyse
   currentUrl: null,   // url of the analysed novel
   startChapterNo: null,// chapter number from the URL the extension was opened on
+  startEpisodeId: null,// kakuyomu episode id from the opened URL (for Read-aloud start)
   startService: null, // ?service= from the opened URL (web / webplus / ai)
+  origTitles: null,   // cached original chapter titles (for the JP↔EN titles toggle)
+  enTitles: null,     // cached English-translated chapter titles
+  titlesEn: false,    // list currently showing translated titles?
   imported: new Set(),// site indices whose content came from an imported EPUB (reused)
   importStash: {},    // site index -> {title, xhtmlBody, imgNames} for reversible re-fetch
   importImgs: null,   // Map(imageName -> record) from the last import
@@ -277,6 +282,14 @@ async function analyse() {
     renderList();
     if ($("importInfo")) $("importInfo").textContent = "";
     if ($("refetchAll")) $("refetchAll").classList.add("hidden");
+    // JP↔EN chapter-title toggle: offer it for non-English sources.
+    S.origTitles = null; S.enTitles = null; S.titlesEn = false;
+    if ($("translateTitles")) {
+      const nonEn = meta.origLang && meta.origLang !== "en";
+      $("translateTitles").classList.toggle("hidden", !nonEn);
+      $("translateTitles").textContent = "🌐 Translate titles";
+      $("translateTitles").disabled = false;
+    }
     $("pack").disabled = false;
     $("reverse").classList.remove("hidden");
     addRecent(url, meta.title);
@@ -372,9 +385,49 @@ function reverseChapters() {
   $("download").classList.add("hidden");
   $("update").classList.add("hidden");
   $("retryFailed").classList.add("hidden");
+  S.origTitles = null; S.enTitles = null; S.titlesEn = false;
+  if ($("translateTitles")) $("translateTitles").textContent = "🌐 Translate titles";
   renderRange();
   renderList();
   setStatus(`Reversed — ${S.chapters.length} chapters.`);
+}
+
+// In-place swap of the displayed chapter titles (preserves checkboxes, dots, filter).
+function applyTitleDisplay() {
+  document.querySelectorAll("#list .item").forEach((row) => {
+    const cb = row.querySelector("input"); if (!cb) return;
+    const i = +cb.dataset.i;
+    const ttl = row.querySelector(".ttl"); if (!ttl) return;
+    const dot = ttl.querySelector(".st");
+    ttl.textContent = "";
+    if (dot) ttl.appendChild(dot);
+    ttl.appendChild(document.createTextNode(S.chapters[i] ? (S.chapters[i].title || "Chapter " + (i + 1)) : ""));
+  });
+  [$("first"), $("last")].forEach((sel) => {
+    if (!sel) return;
+    Array.from(sel.options).forEach((o) => { const i = +o.value; if (S.chapters[i]) o.textContent = S.chapters[i].title || `Chapter ${i + 1}`; });
+  });
+}
+
+// Toggle the chapter LIST between original and English-translated titles (kakuyomu etc.).
+async function toggleTranslateTitles() {
+  if (!S.chapters.length) return;
+  const btn = $("translateTitles");
+  if (!S.origTitles) S.origTitles = S.chapters.map((c) => c.title);
+  if (S.titlesEn) {
+    S.chapters.forEach((c, i) => { c.title = S.origTitles[i]; });
+    S.titlesEn = false; btn.textContent = "🌐 Translate titles";
+  } else {
+    if (!S.enTitles) {
+      btn.disabled = true; btn.textContent = "Translating…";
+      try { S.enTitles = await translateAll(S.origTitles, "en", "auto"); }
+      catch (e) { console.warn("title translate failed", e); setStatus("Title translation failed."); btn.disabled = false; btn.textContent = "🌐 Translate titles"; return; }
+      btn.disabled = false;
+    }
+    S.chapters.forEach((c, i) => { c.title = S.enTitles[i] || S.origTitles[i]; });
+    S.titlesEn = true; btn.textContent = "🇯🇵 Show original";
+  }
+  applyTitleDisplay();
 }
 
 // ---------- chapter filter ----------
@@ -589,9 +642,12 @@ async function readAloud() {
     author: $("author").value.trim() || (S.meta && S.meta.author) || "",
     language: $("language").value.trim() || "en",
   };
-  // Start on the chapter the extension was opened on, if we can find it.
+  // Start on the chapter/episode the extension was opened on, if we can find it.
   let startIndex = 0;
-  if (S.startChapterNo != null) {
+  if (S.startEpisodeId != null) { // kakuyomu: match by episode id
+    const k = S.chapters.findIndex((c) => String(c.id) === String(S.startEpisodeId) || (c.url || "").includes("/episodes/" + S.startEpisodeId));
+    if (k >= 0) startIndex = k;
+  } else if (S.startChapterNo != null) {
     let k = S.chapters.findIndex((c) => c.no === S.startChapterNo);
     if (k < 0) k = S.chapters.findIndex((c) => { const m = /chapter-(\d+)/i.exec(c.url || ""); return m && +m[1] === S.startChapterNo; });
     if (k >= 0) startIndex = k;
@@ -945,9 +1001,8 @@ async function finishPack() {
   // edited the field away from its auto-filled "en" (never touches translate
   // mode, which keeps "en" for both the tag and the translation target).
   let language = $("language").value.trim() || "en";
-  if (S.adapter && S.adapter.id === "generic" && S.service === "raw"
-      && S.meta && S.meta.origLang && language === "en") {
-    language = S.meta.origLang;
+  if (S.service === "raw" && S.meta && S.meta.origLang && language === "en") {
+    language = S.meta.origLang; // Original-mode download → tag with the source language
   }
   const meta = {
     title: $("title").value.trim() || "Untitled",
@@ -1151,7 +1206,7 @@ async function init() {
   chrome.tabs.getCurrent((t) => { if (t) { toolTabId = t.id; toolWinId = t.windowId; } });
 
   // Hosts we auto-analyse on when the extension is opened from one of their pages.
-  const AUTO_HOSTS = ["wtr-lab.com", "genesistudio.com"];
+  const AUTO_HOSTS = ["wtr-lab.com", "genesistudio.com", "kakuyomu.jp"];
   const params = new URLSearchParams(location.search);
   const src = params.get("src");
   let autoAnalyse = false;
@@ -1170,6 +1225,11 @@ async function init() {
           const svc = new URL(src).searchParams.get("service");
           if (svc) S.startService = svc;
           u = src.replace(/\/chapter-\d+\/?(?:[?#].*)?$/i, "");
+        }
+        // kakuyomu: remember the opened episode id so Read-aloud starts on it.
+        if (host.endsWith("kakuyomu.jp")) {
+          const em = /\/episodes\/(\d+)/.exec(src);
+          if (em) S.startEpisodeId = em[1];
         }
       }
     } catch {}
@@ -1234,6 +1294,7 @@ async function init() {
   $("selAll").addEventListener("click", () => { document.querySelectorAll(".item input").forEach((c) => (c.checked = true)); updateSelInfo(); });
   $("selNone").addEventListener("click", () => { document.querySelectorAll(".item input").forEach((c) => (c.checked = false)); updateSelInfo(); });
   $("reverse").addEventListener("click", reverseChapters);
+  if ($("translateTitles")) $("translateTitles").addEventListener("click", toggleTranslateTitles);
   $("filter").addEventListener("input", filterRows);
   $("filterCheck").addEventListener("click", () => setChecksForShown(true));
   $("filterUncheck").addEventListener("click", () => setChecksForShown(false));
