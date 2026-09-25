@@ -167,32 +167,41 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
 .synopsis p{text-indent:1.2em;margin:0 0 .6em}`,
   });
 
-  // Front matter (cover page + title/synopsis page) is included by default; a
-  // caller can pass includeFrontMatter:false to emit a chapters-only book.
-  const frontMatter = meta.includeFrontMatter !== false;
+  // Front matter is split into two concerns:
+  //   - the cover IMAGE metadata (the thumbnail readers/OS show for the file) —
+  //     always on when a cover is available (includeCover !== false).
+  //   - the front PAGES inside the book (a visible cover page so the book opens
+  //     on it, plus the title/author/synopsis page) — gated by includeTitlePage.
+  // The old includeFrontMatter:false still works as a shorthand for "turn all off".
+  const legacyOff = meta.includeFrontMatter === false;
+  const wantCoverImage = !legacyOff && meta.includeCover !== false;
+  const wantFrontPages = !legacyOff && meta.includeTitlePage !== false;
 
-  // cover (image metadata + a real cover page so the book opens on it)
+  // cover image metadata (file thumbnail) + optional visible cover page
   let coverMeta = "", coverImageItem = "", coverPageItem = "", coverPageRef = "";
-  if (frontMatter && meta.cover && meta.cover.data) {
+  if (wantCoverImage && meta.cover && meta.cover.data) {
     const cname = "images/cover." + (meta.cover.ext || "jpg");
     files.push({ name: "OEBPS/" + cname, data: meta.cover.data });
     coverImageItem = `<item id="cover-image" href="${cname}" media-type="${meta.cover.mime || "image/jpeg"}" properties="cover-image"/>`;
     coverMeta = `<meta name="cover" content="cover-image"/>`;
-    files.push({
-      name: "OEBPS/cover.xhtml",
-      data: `<?xml version="1.0" encoding="UTF-8"?>
+    // A real cover page so the book opens on the cover — part of the front pages.
+    if (wantFrontPages) {
+      files.push({
+        name: "OEBPS/cover.xhtml",
+        data: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
 <head><meta charset="utf-8"/><title>Cover</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body class="cover" epub:type="cover"><img src="${cname}" alt="Cover"/></body></html>`,
-    });
-    coverPageItem = `<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>`;
-    coverPageRef = `<itemref idref="coverpage"/>`;
+      });
+      coverPageItem = `<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>`;
+      coverPageRef = `<itemref idref="coverpage"/>`;
+    }
   }
 
-  // title page (title + author + optional synopsis) — part of the front matter
+  // title page (title + author + optional synopsis) — part of the front pages
   let titlePageItem = "", titlePageRef = "";
-  if (frontMatter) {
+  if (wantFrontPages) {
     const descHtml = meta.description ? `<div class="synopsis">${meta.description.split(/\n+/).map((p) => `<p>${xmlEscape(p)}</p>`).join("")}</div>` : "";
     files.push({
       name: "OEBPS/title.xhtml",
@@ -221,13 +230,19 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
   chapters.forEach((ch, i) => {
     const idx = pad(i + 1, 4);
     const fname = `chapter-${idx}.xhtml`;
+    // Stamp each chapter with its stable source identity (chapter number + URL)
+    // so a later re-import can match by identity — surviving inserts/reorders —
+    // instead of by position. Readers ignore these data-* attributes.
+    const srcAttrs =
+      (ch.srcNo != null ? ` data-src-no="${xmlEscape(String(ch.srcNo))}"` : "") +
+      (ch.srcUrl ? ` data-src-url="${xmlEscape(ch.srcUrl)}"` : "");
     const doc = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
 <head><meta charset="utf-8"/><title>${xmlEscape(ch.title)}</title>
 <link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
-<body><h1>${xmlEscape(ch.title)}</h1>
+<body${srcAttrs}><h1>${xmlEscape(ch.title)}</h1>
 ${ch.xhtmlBody}
 </body></html>`;
     files.push({ name: "OEBPS/" + fname, data: doc });

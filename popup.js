@@ -1,5 +1,8 @@
 import { pickAdapter, adapterById } from "./adapters/registry.js";
 import { buildEpub } from "./epub.js";
+import { parseEpub } from "./epubread.js";
+import { initMerge } from "./mergeview.js";
+import { initRead, readerStop, openLive, readerReload } from "./readerview.js";
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,6 +39,11 @@ const S = {
   counts: {},         // url -> chapter count at last pack (for "new since" detection)
   newFrom: null,      // index from which chapters are "new" this analyse
   currentUrl: null,   // url of the analysed novel
+  startChapterNo: null,// chapter number from the URL the extension was opened on
+  startService: null, // ?service= from the opened URL (web / webplus / ai)
+  imported: new Set(),// site indices whose content came from an imported EPUB (reused)
+  importStash: {},    // site index -> {title, xhtmlBody, imgNames} for reversible re-fetch
+  importImgs: null,   // Map(imageName -> record) from the last import
 };
 
 // ---------- persistence (settings + resume) ----------
@@ -48,7 +56,7 @@ function savePrefs() {
       lang: ($("language").value || "").trim(),
       autoClose: $("capAutoClose") ? $("capAutoClose").checked : true,
       parallel: $("parallel") ? $("parallel").checked : false,
-      frontMatter: $("frontMatter") ? $("frontMatter").checked : true,
+      includeTitlePage: $("includeTitlePage") ? $("includeTitlePage").checked : true,
       theme: document.documentElement.getAttribute("data-theme") || "dark",
     }});
   } catch (e) { /* ignore */ }
@@ -68,23 +76,67 @@ function addRecent(url, title) {
     });
   } catch (e) { /* ignore */ }
 }
+// Remove a single recent novel by url.
+function removeRecent(url) {
+  if (!store || !url) return;
+  try {
+    store.get("recent", (o) => {
+      let list = (o && Array.isArray(o.recent)) ? o.recent : [];
+      list = list.filter((r) => r && r.url !== url);
+      store.set({ recent: list });
+      renderRecent(list);
+    });
+  } catch (e) { /* ignore */ }
+}
+// Open/close the recent dropdown panel.
+function setRecentOpen(open) {
+  const list = $("recentList"), tog = $("recentToggle");
+  if (!list || !tog) return;
+  list.classList.toggle("hidden", !open);
+  tog.classList.toggle("open", open);
+  tog.setAttribute("aria-expanded", open ? "true" : "false");
+}
 function renderRecent(list) {
-  const sel = $("recent");
-  if (!sel) return;
-  sel.innerHTML = '<option value="">Recent novels…</option>';
+  const wrap = $("recentList");
+  if (!wrap) return;
+  wrap.innerHTML = "";
   (list || []).forEach((r) => {
-    const o = document.createElement("option");
-    o.value = r.url; o.textContent = r.title || r.url;
-    sel.appendChild(o);
+    const item = document.createElement("div");
+    item.className = "recent-item";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "recent-open";
+    open.textContent = r.title || r.url;
+    open.title = r.url;
+    open.addEventListener("click", () => { setRecentOpen(false); $("url").value = r.url; analyse(); });
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "recent-remove";
+    rm.textContent = "×";
+    rm.title = "Remove from recent";
+    rm.setAttribute("aria-label", "Remove from recent");
+    rm.addEventListener("click", (e) => { e.stopPropagation(); removeRecent(r.url); });
+    item.appendChild(open);
+    item.appendChild(rm);
+    wrap.appendChild(item);
   });
+  const n = (list && list.length) || 0;
+  const lbl = document.querySelector(".recent-toggle-label");
+  if (lbl) lbl.textContent = n ? `Recent novels (${n})` : "Recent novels…";
   const row = $("recentRow");
-  if (row) row.classList.toggle("hidden", !(list && list.length));
+  if (row) row.classList.toggle("hidden", !n);
+  if (!n) setRecentOpen(false);
 }
 
 // Persist enough to continue a pack after a reload. Chapter results hold text +
 // image URLs (not bytes), so they serialise cleanly; images are re-fetched at
 // build time. Kept small by storing only what a resume needs.
 function saveResume() {
+  // Imported chapters carry image bytes that live only in memory (S.imgCache),
+  // so a cross-reload resume couldn't rebuild them — skip persisting in that case
+  // to avoid ever producing a book with missing images. In-session CAPTCHA
+  // continuation still works (it uses in-memory state, not this store).
+  if (S.imported.size) return;
   try {
     store && store.set({ resume: {
       url: $("url").value, service: S.service,
@@ -129,16 +181,38 @@ function applyTheme(theme) {
   if (btn) btn.textContent = theme === "light" ? "☀️" : "🌙";
 }
 
-// Per-chapter status dot in the list: '', 'loading', 'ok', 'fail'.
+// Top-level mode switcher: novel | merge | read.
+let currentMode = "novel";
+function setMode(mode) {
+  if (!["novel", "merge", "read"].includes(mode)) mode = "novel";
+  if (mode !== "read" && currentMode === "read") { try { readerStop(); } catch (e) {} try { cancelReaderCaptcha(); } catch (e) {} }
+  currentMode = mode;
+  $("modeNovel").hidden = mode !== "novel";
+  $("modeMerge").hidden = mode !== "merge";
+  $("modeRead").hidden = mode !== "read";
+  document.querySelectorAll("#modeTabs .modetab").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+  try { store && store.set({ mode }); } catch (e) {}
+}
+
+// Per-chapter status dot in the list: '', 'loading', 'ok', 'fail', 'imp'
+// (imported/reused), 'refetch' (imported but flagged to re-download).
 function setRowStatus(idx, state) {
   const cb = document.querySelector(`#list .item input[data-i="${idx}"]`);
   if (!cb) return;
   const dot = cb.closest(".item").querySelector(".st");
-  if (dot) dot.className = "st" + (state ? " " + state : "");
+  if (!dot) return;
+  dot.className = "st" + (state ? " " + state : "");
+  dot.title = state === "imp" ? "Imported — click to re-fetch this chapter"
+    : state === "refetch" ? "Will be re-fetched on the next Pack — click to keep the imported version"
+    : "";
 }
 function resetRowDots() {
   for (const q of S.queue) {
-    setRowStatus(q.index, S.results[q.index] ? (S.failed.has(q.index) ? "fail" : "ok") : "");
+    const i = q.index;
+    const state = S.results[i]
+      ? (S.failed.has(i) ? "fail" : (S.imported.has(i) ? "imp" : "ok"))
+      : (i in S.importStash ? "refetch" : "");
+    setRowStatus(i, state);
   }
 }
 
@@ -169,6 +243,7 @@ async function analyse() {
     setBar(0);
     S.queue = []; S.qpos = 0; S.results = {}; S.imgCache = {}; S.imgN = 0;
     S.lastBlob = null; S.lastName = null; S.failed = new Set();
+    S.imported = new Set(); S.importStash = {}; S.importImgs = null;
     $("download").classList.add("hidden");
     $("update").classList.add("hidden");
     $("retryFailed").classList.add("hidden");
@@ -176,6 +251,8 @@ async function analyse() {
     renderModes(S.adapter.options());
     renderRange();
     renderList();
+    if ($("importInfo")) $("importInfo").textContent = "";
+    if ($("refetchAll")) $("refetchAll").classList.add("hidden");
     $("pack").disabled = false;
     $("reverse").classList.remove("hidden");
     addRecent(url, meta.title);
@@ -205,9 +282,11 @@ function renderModes(opts) {
     row.classList.add("hidden"); S.service = null; return;
   }
   row.classList.remove("hidden");
-  // Prefer the mode remembered from last session, if this adapter offers it.
-  S.service = (S.prefService && opts.services.some((s) => s.id === S.prefService))
-    ? S.prefService : (opts.defaultService || opts.services[0].id);
+  // Service preference order: the ?service= from the opened chapter URL, then the
+  // mode remembered from last session, then the adapter's default.
+  const has = (id) => id && opts.services.some((s) => s.id === id);
+  S.service = has(S.startService) ? S.startService
+    : (has(S.prefService) ? S.prefService : (opts.defaultService || opts.services[0].id));
   for (const s of opts.services) {
     const id = "mode_" + s.id;
     const lbl = document.createElement("label");
@@ -263,6 +342,9 @@ function reverseChapters() {
   if (!S.chapters.length) return;
   S.chapters.reverse();
   S.queue = []; S.qpos = 0; S.results = {}; S.imgCache = {}; S.imgN = 0; S.failed = new Set();
+  S.imported = new Set(); S.importStash = {}; S.importImgs = null;
+  if ($("importInfo")) $("importInfo").textContent = "";
+  if ($("refetchAll")) $("refetchAll").classList.add("hidden");
   $("download").classList.add("hidden");
   $("update").classList.add("hidden");
   $("retryFailed").classList.add("hidden");
@@ -334,6 +416,9 @@ async function fetchImage(url) {
 }
 
 async function chapterToXhtml(chapter) {
+  // Imported chapters already carry finished XHTML (and their images are preloaded
+  // into S.imgCache), so pass the body straight through — no re-render, no fetch.
+  if (typeof chapter.xhtmlBody === "string") return chapter.xhtmlBody;
   let html = "";
   for (const b of chapter.blocks) {
     if (b.type === "text") {
@@ -350,15 +435,166 @@ async function chapterToXhtml(chapter) {
   return html;
 }
 
+// ---------- read aloud (live TTS reader off the site) ----------
+// Provider for the reader: fetch a chapter's content on demand, reusing the pack
+// pipeline (adapter.getChapter → blocks → XHTML, images into S.imgCache).
+async function fetchChapterAsXhtml(index) {
+  if (!S.results[index]) S.results[index] = await fetchChapterWithCaptcha(index);
+  const res = S.results[index];
+  const xhtmlBody = await chapterToXhtml(res);
+  if (!xhtmlBody || !xhtmlBody.trim()) { // gated / empty (e.g. AI wall) → don't cache it
+    delete S.results[index];
+    const e = new Error("gated"); e.name = "GateError"; throw e;
+  }
+  return { title: res.title, xhtmlBody, images: Object.values(S.imgCache) };
+}
+
+async function getChapterForReader(index) {
+  try {
+    return await fetchChapterAsXhtml(index);
+  } catch (e) {
+    // AI is guest-limited to ~10 chapters. Rather than dead-end, fall back to the
+    // site's free, unlimited Web+ translation and keep reading seamlessly.
+    const gated = e.name === "GateError" || /registration|guest|10 chapters|limit/i.test(e.message || "");
+    if (S.service === "ai" && gated) {
+      S.service = "webplus"; savePrefs();
+      syncServiceSelectors("webplus");
+      delete S.results[index]; S.imgCache = {}; S.imgN = 0; // drop the AI-empty attempt
+      const out = await fetchChapterAsXhtml(index);
+      out.notice = "AI is free only for the first ~10 chapters (guests) — switched to Web+ to keep reading. Sign in to wtr-lab for AI.";
+      return out;
+    }
+    throw e;
+  }
+}
+
+// Reflect the active service in both the reader and novel-mode selectors.
+function syncServiceSelectors(id) {
+  const r = document.querySelector(`#readServiceSeg input[value="${id}"]`); if (r) r.checked = true;
+  const n = document.querySelector(`#modes input[value="${id}"]`); if (n) n.checked = true;
+}
+
+// A friendlier explanation when the current service can't serve a chapter.
+function serviceHint() {
+  return S.service === "ai"
+    ? "AI translation is free only for the first ~10 chapters on wtr-lab (guests). Switch to Web or Web+ above to keep reading."
+    : null;
+}
+
+// Fetch a chapter, transparently handling a Turnstile/CAPTCHA block: warn the user,
+// open the chapter's page to solve, auto-retry until it clears, then close that tab
+// and return focus to the reader. Decoupled from the pack queue.
+let readerCaptcha = null;
+function cancelReaderCaptcha() { if (readerCaptcha) { readerCaptcha.cancel(); readerCaptcha = null; } }
+function fetchChapterWithCaptcha(index) {
+  const chapter = S.chapters[index];
+  const opts = () => ({ service: S.service, lang: $("language").value.trim() || "en" });
+  return new Promise((resolve, reject) => {
+    let timer = null, tries = 0, cancelled = false, capTabId = null, blocked = false;
+    const hideBar = () => $("readCaptcha").classList.add("hidden");
+    const openTab = () => {
+      let url = chapter && chapter.url;
+      if (!url) return;
+      // Point at the exact chapter AND current translation service, so solving the
+      // CAPTCHA clears it for what we're actually fetching (e.g. Web+ ch 22).
+      if (S.adapter && S.adapter.id === "wtrlab") url += (url.includes("?") ? "&" : "?") + "service=" + encodeURIComponent(S.service || "web");
+      chrome.tabs.create({ url, active: true }, (t) => { capTabId = t ? t.id : null; });
+    };
+    const closeAndReturn = () => {
+      if (capTabId != null) { chrome.tabs.remove(capTabId, () => void chrome.runtime.lastError); capTabId = null; }
+      if (toolTabId != null) { chrome.tabs.update(toolTabId, { active: true }, () => void chrome.runtime.lastError); if (toolWinId != null) chrome.windows.update(toolWinId, { focused: true }, () => void chrome.runtime.lastError); }
+    };
+    const done = () => { if (timer) clearTimeout(timer); timer = null; hideBar(); if (readerCaptcha && readerCaptcha.p === resolve) readerCaptcha = null; };
+    const cancel = () => { cancelled = true; done(); const e = new Error("Loading cancelled."); e.name = "CancelledError"; reject(e); };
+    readerCaptcha = { cancel, p: resolve };
+    $("readCaptchaOpen").onclick = openTab;
+    $("readCaptchaCancel").onclick = cancel;
+    const attempt = async () => {
+      if (cancelled) return;
+      tries++;
+      try {
+        const res = await S.adapter.getChapter(chapter, opts());
+        done();
+        if (blocked) closeAndReturn(); // solved → tidy the CAPTCHA tab and refocus the reader
+        resolve(res);
+      } catch (e) {
+        if (cancelled) return;
+        if (e.name === "CaptchaError") {
+          if (!blocked) { blocked = true; openTab(); } // first block: warn + open the page
+          $("readCaptchaMsg").textContent = `⚠ Hit a CAPTCHA on chapter ${chapter.no || (index + 1)} (${S.service}) — your click did register. Solve it in the opened tab; reading resumes automatically… (${tries})`;
+          $("readCaptcha").classList.remove("hidden");
+          timer = setTimeout(attempt, 3000);
+        } else { done(); reject(new Error(serviceHint() || e.message || "Couldn't load this chapter.")); }
+      }
+    };
+    attempt();
+  });
+}
+
+// Build the reader's Web / Web+ / AI selector (wtr-lab). Changing it re-fetches.
+function renderReadService() {
+  const wrap = $("readService"), seg = $("readServiceSeg");
+  const opts = S.adapter && S.adapter.options ? S.adapter.options() : null;
+  if (!opts || !opts.services || !opts.services.length) { wrap.classList.add("hidden"); return; }
+  seg.innerHTML = "";
+  for (const s of opts.services) {
+    const lbl = document.createElement("label");
+    lbl.innerHTML = `<input type="radio" name="rmode" value="${s.id}" ${s.id === S.service ? "checked" : ""}><span>${s.label}</span>`;
+    seg.appendChild(lbl);
+  }
+  seg.querySelectorAll('input[name=rmode]').forEach((r) => r.addEventListener("change", (e) => {
+    S.service = e.target.value; savePrefs();
+    const nm = document.querySelector(`#modes input[value="${S.service}"]`); if (nm) nm.checked = true; // keep novel mode in sync
+    cancelReaderCaptcha(); // stop waiting on a block from the old service
+    S.results = {}; S.imgCache = {}; S.imgN = 0; // drop cached content for the old service
+    readerReload();
+  }));
+  wrap.classList.remove("hidden");
+}
+
+async function readAloud() {
+  if (!S.chapters.length) {
+    if (!$("url").value.trim()) { setStatus("Load a novel URL first."); return; }
+    await analyse();
+    if (!S.chapters.length) return; // analyse failed / no chapters
+  }
+  const meta = {
+    title: $("title").value.trim() || (S.meta && S.meta.title) || "Novel",
+    author: $("author").value.trim() || (S.meta && S.meta.author) || "",
+    language: $("language").value.trim() || "en",
+  };
+  // Start on the chapter the extension was opened on, if we can find it.
+  let startIndex = 0;
+  if (S.startChapterNo != null) {
+    let k = S.chapters.findIndex((c) => c.no === S.startChapterNo);
+    if (k < 0) k = S.chapters.findIndex((c) => { const m = /chapter-(\d+)/i.exec(c.url || ""); return m && +m[1] === S.startChapterNo; });
+    if (k >= 0) startIndex = k;
+  }
+  setMode("read");
+  renderReadService();
+  openLive({
+    meta, chapters: S.chapters,
+    bookKey: S.currentUrl ? "u:" + S.currentUrl : null,
+    provider: getChapterForReader, startIndex,
+  });
+}
+
 // ---------- pack ----------
 async function startPack() {
   const sel = selectedIndices();
   if (!sel.length) { setStatus("No chapters selected."); return; }
   S.queue = sel.map((i) => ({ index: i, chapter: S.chapters[i] }));
   S.qpos = 0;
-  S.results = {};
-  S.imgCache = {};
-  S.imgN = 0;
+  if (S.imported.size) {
+    // Keep imported chapters (+ their images) so Pack only fetches the rest;
+    // drop any previously-fetched (non-imported) content for a clean re-fetch.
+    for (const k of Object.keys(S.results)) if (!S.imported.has(+k)) delete S.results[+k];
+    for (const key of Object.keys(S.imgCache)) if (!S.imgCache[key].imported) delete S.imgCache[key];
+  } else {
+    S.results = {};
+    S.imgCache = {};
+    S.imgN = 0;
+  }
   S.failed = new Set();
   S.cancel = false;
   stopResumePoll();
@@ -390,6 +626,152 @@ async function updatePack() {
   setStatus(`Updating — reusing ${have} fetched, getting ${sel.length - have} new…`);
   stopResumePoll();
   await runPack();
+}
+
+// ---------- import an existing EPUB ----------
+const normTitle = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+// A stable-ish key for a chapter: its embedded number ("#101", "Chapter 101",
+// leading "101") if present, else the normalized title text.
+function titleKey(title) {
+  const m = /#\s*(\d+)/.exec(title) || /\bchapter\s*(\d+)/i.exec(title) || /^\s*(\d+)\b/.exec(title || "");
+  return m ? "n:" + parseInt(m[1], 10) : "t:" + normTitle(title);
+}
+
+// Match imported chapters to the CURRENT site list by identity (source number/URL
+// stamped at build time, else chapter-number/title), so the reuse survives
+// inserts, reorders and renames. Returns importedIndex -> siteIndex (or -1).
+function matchImportedToSite(imported) {
+  const N = S.chapters.length;
+  const taken = new Array(N).fill(false);
+  const assign = new Array(imported.length).fill(-1);
+  const byUrl = new Map(), byNo = new Map(), byKey = new Map();
+  S.chapters.forEach((c, i) => {
+    if (c.url) byUrl.set(c.url, i);
+    if (c.no != null) byNo.set(String(c.no), i);
+    const k = titleKey(c.title);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(i);
+  });
+  const take = (i) => { if (i != null && i >= 0 && !taken[i]) { taken[i] = true; return i; } return -1; };
+  let matched = 0;
+  imported.forEach((ch, j) => {
+    let idx = -1;
+    if (ch.srcUrl && byUrl.has(ch.srcUrl)) idx = take(byUrl.get(ch.srcUrl));
+    if (idx < 0 && ch.srcNo != null && byNo.has(String(ch.srcNo))) idx = take(byNo.get(String(ch.srcNo)));
+    if (idx < 0) {
+      const q = byKey.get(titleKey(ch.title));
+      if (q) for (const cand of q) if (!taken[cand]) { idx = take(cand); break; }
+    }
+    assign[j] = idx;
+    if (idx >= 0) matched++;
+  });
+  // Fallback: numberless site whose titles all changed → behave like a straight
+  // positional import rather than re-fetching everything.
+  if (matched === 0 && imported.length <= N) {
+    imported.forEach((ch, j) => { if (!taken[j]) { assign[j] = j; taken[j] = true; } });
+  }
+  return assign;
+}
+
+// Reuse an imported chapter at site index i (content + its images).
+function applyImported(i) {
+  const st = S.importStash[i];
+  if (!st) return;
+  S.results[i] = { title: st.title, xhtmlBody: st.xhtmlBody };
+  S.imported.add(i);
+  S.failed.delete(i);
+  if (S.importImgs) for (const name of st.imgNames) { const rec = S.importImgs.get(name); if (rec) S.imgCache[name] = rec; }
+  setRowStatus(i, "imp");
+}
+// Mark an imported chapter to be re-fetched instead (e.g. the author edited it).
+// Drops its content and any images no other imported chapter still needs.
+function unapplyImported(i) {
+  const st = S.importStash[i];
+  if (!st) return;
+  S.imported.delete(i);
+  delete S.results[i];
+  for (const name of st.imgNames) {
+    let stillUsed = false;
+    for (const j of S.imported) { const s = S.importStash[j]; if (s && s.imgNames.includes(name)) { stillUsed = true; break; } }
+    if (!stillUsed) delete S.imgCache[name];
+  }
+  setRowStatus(i, "refetch");
+}
+// Flip every imported chapter between reuse and re-fetch in one click.
+function refetchAllToggle() {
+  const idxs = Object.keys(S.importStash).map(Number);
+  if (!idxs.length || S.running) return;
+  const anyApplied = idxs.some((i) => S.imported.has(i));
+  if (anyApplied) {
+    idxs.forEach((i) => { if (S.imported.has(i)) unapplyImported(i); });
+    setStatus(`All ${idxs.length} imported chapters flagged to re-fetch on the next Pack.`);
+  } else {
+    idxs.forEach((i) => applyImported(i));
+    setStatus(`All ${idxs.length} chapters restored from your import (won't be re-fetched).`);
+  }
+  updateRefetchAllLabel();
+  updateSelInfo();
+}
+// Show/label the "Re-fetch all" toggle based on the current import state.
+function updateRefetchAllLabel() {
+  const b = $("refetchAll");
+  if (!b) return;
+  const idxs = Object.keys(S.importStash).map(Number);
+  if (!idxs.length) { b.classList.add("hidden"); return; }
+  b.classList.remove("hidden");
+  b.textContent = idxs.some((i) => S.imported.has(i)) ? "↻ Re-fetch all" : "Keep all imported";
+}
+
+// Forget any prior import (content, images, stash).
+function clearImport() {
+  for (const k of Object.keys(S.results)) if (S.imported.has(+k)) delete S.results[+k];
+  for (const key of Object.keys(S.imgCache)) if (S.imgCache[key] && S.imgCache[key].imported) delete S.imgCache[key];
+  S.imported = new Set();
+  S.importStash = {};
+  S.importImgs = null;
+}
+
+// Import a previously-built .epub and reuse its chapters, so a later pack only
+// fetches the newly-released (or manually re-flagged) ones. Chapters are matched
+// to the site by identity — surviving inserts, reorders and renames — not by
+// position. No re-download and no re-translation of the reused chapters.
+async function importEpub(file) {
+  if (!file) return;
+  const info = $("importInfo");
+  if (!S.chapters.length) { setStatus("Load & Analyse the novel first, then Import EPUB."); return; }
+  if (S.running) { setStatus("Finish or stop the current pack before importing."); return; }
+  setStatus(`Reading “${file.name}”…`);
+  try {
+    const buf = await file.arrayBuffer();
+    const { chapters, images } = await parseEpub(buf);
+
+    clearImport();
+    S.importImgs = new Map(images.map((r) => [r.name, r]));
+    const assign = matchImportedToSite(chapters);
+
+    let placed = 0, orphan = 0, renamed = 0;
+    chapters.forEach((ch, j) => {
+      const i = assign[j];
+      if (i < 0) { orphan++; return; }
+      S.importStash[i] = { title: ch.title, xhtmlBody: ch.xhtmlBody, imgNames: ch.imgNames || [] };
+      applyImported(i);
+      if (normTitle(ch.title) && normTitle(S.chapters[i].title) && normTitle(ch.title) !== normTitle(S.chapters[i].title)) renamed++;
+      placed++;
+    });
+
+    const toFetch = S.chapters.length - placed;
+    let m = `Imported ${placed} chapter${placed === 1 ? "" : "s"} — ${toFetch} to fetch.`;
+    if (orphan) m += ` ${orphan} not on the site any more (skipped).`;
+    if (renamed) m += ` ${renamed} title${renamed === 1 ? "" : "s"} changed.`;
+    m += ` Click “Pack EPUB” to build. Tip: click a green ● to re-fetch that chapter (e.g. if the author edited it).`;
+    setStatus(m);
+    if (info) info.textContent = `${placed} reused · ${toFetch} to fetch${orphan ? ` · ${orphan} skipped` : ""}`;
+    updateRefetchAllLabel();
+  } catch (e) {
+    console.error("import failed", e);
+    setStatus("Import failed: " + e.message);
+    if (info) info.textContent = "import failed";
+  }
 }
 
 function packDone() {
@@ -505,13 +887,15 @@ async function runPack() {
 async function finishPack() {
   setStatus("Building EPUB (images + packaging)…");
   setBar(1);
-  // Front matter (cover page + title/synopsis page) is opt-out: when unticked
-  // the EPUB is chapters only — handy for grabbing a single chapter.
-  const frontMatter = $("frontMatter") ? $("frontMatter").checked : true;
-  // cover (only fetched when front matter is included)
+  // The cover IMAGE (the file's thumbnail) is always included when a cover URL
+  // is present. The in-book front pages — the visible cover page plus the
+  // title/author/synopsis page — are an opt-out via includeTitlePage.
+  const includeCover = true;
+  const includeTitlePage = $("includeTitlePage") ? $("includeTitlePage").checked : true;
+  // cover
   let cover = null;
   const coverUrl = $("cover").value.trim();
-  if (frontMatter && coverUrl) {
+  if (includeCover && coverUrl) {
     try {
       const res = await fetchT(coverUrl, { credentials: "include" });
       const blob = await res.blob();
@@ -526,7 +910,8 @@ async function finishPack() {
     done++;
     setStatus(`Packaging ${done} / ${S.queue.length} (images)…`);
     const body = await chapterToXhtml(ch);
-    chapters.push({ title: ch.title, xhtmlBody: body });
+    const src = S.chapters[index] || {};
+    chapters.push({ title: ch.title, xhtmlBody: body, srcNo: src.no, srcUrl: src.url });
   }
   const images = Object.values(S.imgCache).map((r) => ({ id: r.id, name: r.name, mime: r.mime, data: r.data }));
   // Language tag: the field value as always, except a non-translated generic
@@ -545,7 +930,8 @@ async function finishPack() {
     description: (S.meta && S.meta.description) || "",
     subjects: (S.meta && S.meta.subjects) || [],
     cover,
-    includeFrontMatter: frontMatter,
+    includeCover,
+    includeTitlePage,
     idSeed: S.currentUrl || null,
   };
   const blob = buildEpub(meta, chapters, images);
@@ -623,14 +1009,18 @@ function loadPrefsAndResume() {
   return new Promise((resolve) => {
     if (!store) { resolve(); return; }
     try {
-      store.get(["prefs", "resume", "recent", "counts"], (o) => {
+      store.get(["prefs", "resume", "recent", "counts", "mode"], (o) => {
+        if (o && o.mode) setMode(o.mode);
         const p = o && o.prefs;
         if (p) {
           S.prefService = p.service || null;
           if (p.lang) $("language").value = p.lang;
           if (typeof p.autoClose === "boolean" && $("capAutoClose")) $("capAutoClose").checked = p.autoClose;
           if (typeof p.parallel === "boolean" && $("parallel")) $("parallel").checked = p.parallel;
-          if (typeof p.frontMatter === "boolean" && $("frontMatter")) $("frontMatter").checked = p.frontMatter;
+          // Title-page pref, falling back to the old single frontMatter pref.
+          const tp = typeof p.includeTitlePage === "boolean" ? p.includeTitlePage
+                   : (typeof p.frontMatter === "boolean" ? p.frontMatter : true);
+          if ($("includeTitlePage")) $("includeTitlePage").checked = tp;
           applyTheme(p.theme === "light" ? "light" : "dark");
         }
         if (o && Array.isArray(o.recent)) renderRecent(o.recent);
@@ -711,18 +1101,18 @@ function startResumePoll() {
 }
 function captchaUrl() {
   // Open a real page on the site so the user can clear the challenge; the
-  // resulting Cloudflare cookie then applies to our subsequent fetches.
+  // resulting Cloudflare cookie then applies to our subsequent fetches. Point at
+  // the stalled chapter AND the current translation service, so solving it clears
+  // the challenge for exactly what the packer is fetching (e.g. Web+ ch 12).
   const q = S.queue[S.qpos];
-  if (q && q.chapter && q.chapter.url) return q.chapter.url; // generic adapter
-  // wtr-lab: the novel homepage does NOT trigger the challenge, so point
-  // straight at the stalled chapter's reader page (…/novel/id/slug/chapter-N).
-  // That makes the CAPTCHA appear immediately — no need to hand-pick a chapter.
-  const base = ($("url").value || "").trim();
-  if (S.adapter && S.adapter.id === "wtrlab" && q && q.chapter && q.chapter.no) {
-    const root = base.replace(/\/chapter-\d+\/?$/i, "").replace(/\/+$/, "");
-    return `${root}/chapter-${q.chapter.no}`;
+  let url = (q && q.chapter && q.chapter.url) ? q.chapter.url : "";
+  if (!url && S.adapter && S.adapter.id === "wtrlab" && q && q.chapter && q.chapter.no) {
+    const root = ($("url").value || "").trim().replace(/\/chapter-\d+\/?$/i, "").replace(/\/+$/, "");
+    url = `${root}/chapter-${q.chapter.no}`;
   }
-  return base;
+  if (!url) url = ($("url").value || "").trim();
+  if (url && S.adapter && S.adapter.id === "wtrlab") url += (url.includes("?") ? "&" : "?") + "service=" + encodeURIComponent(S.service || "web");
+  return url;
 }
 
 // ---------- wire up ----------
@@ -741,8 +1131,16 @@ async function init() {
       const host = new URL(src).hostname;
       if (AUTO_HOSTS.some((h) => host === h || host.endsWith("." + h))) {
         autoAnalyse = true;
-        // wtr-lab: normalise a chapter reader URL back to the novel page.
-        if (host.endsWith("wtr-lab.com")) u = src.replace(/\/chapter-\d+\/?(?:[?#].*)?$/i, "");
+        // wtr-lab: normalise a chapter reader URL back to the novel page, and
+        // remember which chapter + translation service were open so "Read aloud"
+        // can start there with the same service.
+        if (host.endsWith("wtr-lab.com")) {
+          const cm = /\/chapter-(\d+)/i.exec(src);
+          if (cm) S.startChapterNo = +cm[1];
+          const svc = new URL(src).searchParams.get("service");
+          if (svc) S.startService = svc;
+          u = src.replace(/\/chapter-\d+\/?(?:[?#].*)?$/i, "");
+        }
       }
     } catch {}
     $("url").value = u;
@@ -756,9 +1154,19 @@ async function init() {
     const tag = (document.activeElement && document.activeElement.tagName) || "";
     if (!/INPUT|SELECT|TEXTAREA|BUTTON/.test(tag)) { e.preventDefault(); doDownload(); }
   });
+  if ($("readAloud")) $("readAloud").addEventListener("click", readAloud);
   $("pack").addEventListener("click", startPack);
   $("stop").addEventListener("click", () => { S.cancel = true; setStatus("Stopping…"); });
   $("update").addEventListener("click", updatePack);
+  if ($("importEpub") && $("epubFile")) {
+    $("importEpub").addEventListener("click", () => $("epubFile").click());
+    $("epubFile").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      importEpub(f);
+      e.target.value = ""; // allow re-importing the same file
+    });
+  }
+  if ($("refetchAll")) $("refetchAll").addEventListener("click", refetchAllToggle);
   $("retryFailed").addEventListener("click", retryFailed);
   $("download").addEventListener("click", doDownload);
   $("themeToggle").addEventListener("click", () => {
@@ -770,12 +1178,21 @@ async function init() {
     document.querySelectorAll("#list .item input").forEach((cb) => { cb.checked = (+cb.dataset.i) >= S.newFrom; });
     updateSelInfo();
   });
-  $("recent").addEventListener("change", (e) => {
-    const v = e.target.value; if (!v) return;
-    $("url").value = v; e.target.value = ""; analyse();
+  if ($("recentToggle")) $("recentToggle").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const list = $("recentList");
+    setRecentOpen(list ? list.classList.contains("hidden") : true);
+  });
+  document.addEventListener("click", (e) => {
+    if (!(e.target.closest && e.target.closest(".recent-dd"))) setRecentOpen(false);
+  });
+  if ($("recentClear")) $("recentClear").addEventListener("click", () => {
+    try { store && store.set({ recent: [] }); } catch (e) { /* ignore */ }
+    setRecentOpen(false);
+    renderRecent([]);
   });
   $("parallel").addEventListener("change", savePrefs);
-  if ($("frontMatter")) $("frontMatter").addEventListener("change", savePrefs);
+  if ($("includeTitlePage")) $("includeTitlePage").addEventListener("change", savePrefs);
   $("cover").addEventListener("input", updateCoverPreview);
   $("language").addEventListener("change", savePrefs);
   const cac = $("capAutoClose"); if (cac) cac.addEventListener("change", savePrefs);
@@ -792,6 +1209,19 @@ async function init() {
   $("filterUncheck").addEventListener("click", () => setChecksForShown(false));
   $("excludeExtras").addEventListener("click", excludeExtras);
   $("list").addEventListener("change", updateSelInfo);
+  // Click an imported chapter's status dot to toggle reuse ↔ re-fetch.
+  $("list").addEventListener("click", (e) => {
+    const dot = e.target.closest && e.target.closest(".st");
+    if (!dot) return;
+    const cb = dot.closest(".item") && dot.closest(".item").querySelector("input");
+    if (!cb) return;
+    const i = +cb.dataset.i;
+    if (S.running || !(i in S.importStash)) return; // only togglable while idle, imported only
+    if (S.imported.has(i)) { unapplyImported(i); setStatus(`Chapter ${i + 1} will be re-fetched on the next Pack.`); }
+    else { applyImported(i); setStatus(`Chapter ${i + 1} restored from your import (won't be re-fetched).`); }
+    updateRefetchAllLabel();
+    updateSelInfo();
+  });
 
   $("capOpen").addEventListener("click", () => {
     const u = captchaUrl();
@@ -801,10 +1231,15 @@ async function init() {
   $("capCopy").addEventListener("click", () => { const u = captchaUrl(); if (u) navigator.clipboard.writeText(u); setStatus("CAPTCHA link copied."); });
   $("capRetry").addEventListener("click", () => { stopResumePoll(); hideCaptcha(); runPack(); });
 
+  // mode tabs + the two offline modes
+  document.querySelectorAll("#modeTabs .modetab").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  initMerge();
+  initRead();
+
   // Load saved settings + any interrupted pack before auto-analysing.
   await loadPrefsAndResume();
 
-  // Opened the extension while on wtr-lab → load & analyse the novel right away.
-  if (autoAnalyse) analyse();
+  // Opened the extension while on wtr-lab → force novel mode and analyse right away.
+  if (autoAnalyse) { setMode("novel"); analyse(); }
 }
 init();

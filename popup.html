@@ -25,6 +25,17 @@
       <button id="themeToggle" class="icon-btn" title="Toggle light / dark" aria-label="Toggle theme">🌙</button>
     </header>
 
+    <nav id="modeTabs" class="modetabs" role="tablist">
+      <button class="modetab active" data-mode="novel" role="tab">Novel to EPUB</button>
+      <button class="modetab" data-mode="merge" role="tab">EPUB Merger</button>
+      <button class="modetab" data-mode="read" role="tab">Read EPUB</button>
+    </nav>
+
+    <div id="modeNovel">
+    <section class="card readaloud-card">
+      <button id="readAloud" class="accent wide" type="button">🔊 Read this novel aloud (Text-to-Speech)</button>
+      <div class="import-hint"><em>Opens the reader and speaks the chapters — starts on the chapter you opened and fetches each as you go.</em></div>
+    </section>
     <section class="card">
       <div class="card-head"><h2>Source</h2></div>
       <div class="row url-row">
@@ -33,9 +44,16 @@
         <button id="analyse" class="primary">Load &amp; Analyse</button>
       </div>
 
-      <div id="recentRow" class="row hidden">
+      <div id="recentRow" class="row recent-row hidden">
         <label>Recent</label>
-        <select id="recent"><option value="">Recent novels…</option></select>
+        <div class="recent-dd">
+          <button id="recentToggle" class="recent-toggle" type="button" aria-expanded="false">
+            <span class="recent-toggle-label">Recent novels…</span>
+            <span class="recent-caret" aria-hidden="true">▾</span>
+          </button>
+          <div id="recentList" class="recent-list hidden"></div>
+        </div>
+        <button id="recentClear" class="ghost sm" title="Clear all recent novels">Clear</button>
       </div>
 
       <div class="row">
@@ -62,7 +80,20 @@
         <label>Options</label>
         <div class="optcol">
           <label class="opt"><input id="parallel" type="checkbox" /> <span>Faster parallel fetch <em>(quicker, but triggers more CAPTCHAs)</em></span></label>
-          <label class="opt"><input id="frontMatter" type="checkbox" checked /> <span>Include cover &amp; title page <em>(off = chapters only, no cover/synopsis)</em></span></label>
+          <label class="opt"><input id="includeTitlePage" type="checkbox" checked /> <span>Include cover &amp; title page <em>(cover, title, author &amp; synopsis inside the book)</em></span></label>
+        </div>
+      </div>
+
+      <div class="row import-row">
+        <label>Update</label>
+        <div class="import-col">
+          <div class="import-line">
+            <button id="importEpub" class="ghost sm" type="button" title="Load an EPUB you already saved, then fetch only the newly-released chapters">⬆ Import EPUB…</button>
+            <input id="epubFile" type="file" accept=".epub,application/epub+zip" hidden />
+            <button id="refetchAll" class="ghost sm hidden" type="button" title="Re-download every imported chapter (e.g. if the author revised many old chapters)">↻ Re-fetch all</button>
+            <span id="importInfo" class="import-info"></span>
+          </div>
+          <div class="import-hint"><em>Already have earlier chapters? Import your EPUB, then Pack — only the new chapters are fetched and merged into one file. Click a green ● to re-fetch just that chapter, or “Re-fetch all” for every one.</em></div>
         </div>
       </div>
     </section>
@@ -120,6 +151,121 @@
       <div class="tablehead"><span class="inc">Include</span><span class="ttl">Title</span></div>
       <div id="list" class="list"></div>
     </section>
+    </div><!-- /#modeNovel -->
+
+    <div id="modeMerge" hidden>
+      <section class="card">
+        <div class="card-head"><h2>EPUB Merger</h2><span id="mergeCount" class="count">0</span></div>
+        <div class="import-hint"><em>Combine EPUBs you already have — fully offline, no data used. Add two or more files, arrange the chapters, then export one merged book.</em></div>
+        <div class="row">
+          <label>Files</label>
+          <div class="import-col">
+            <div class="import-line">
+              <button id="mergeAdd" class="ghost sm" type="button">⬆ Add EPUBs…</button>
+              <input id="mergeFiles" type="file" accept=".epub,application/epub+zip" multiple hidden />
+              <button id="mergeSort" class="ghost sm hidden" type="button" title="Sort chapters by their number">↕ Sort by number</button>
+              <button id="mergeDedupe" class="ghost sm hidden" type="button" title="Untick duplicate chapters">⧉ De-dupe</button>
+              <button id="mergeClear" class="ghost sm hidden" type="button">Clear</button>
+              <span id="mergeInfo" class="import-info"></span>
+            </div>
+          </div>
+        </div>
+        <div class="row"><label>Title</label><input id="mergeTitle" type="text" placeholder="Merged book title" /></div>
+        <div class="row"><label>Author</label><input id="mergeAuthor" type="text" /></div>
+        <div class="row"><label>Language</label><input id="mergeLang" type="text" value="en" /></div>
+        <div class="row"><label>Cover</label><span id="mergeCoverInfo" class="import-info">from first file</span><img id="mergeCoverPreview" class="coverPreview hidden" alt="cover" /></div>
+      </section>
+
+      <section class="card packbox">
+        <div class="packbtns">
+          <button id="mergeExport" class="accent" disabled>Export (Save As…)</button>
+          <button id="mergeQuick" class="primary" disabled>⬇ Quick download</button>
+        </div>
+        <div id="mergeStatus" class="status">Add EPUB files to begin.</div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Chapters</h2><span id="mergeSelInfo" class="sel-info"></span></div>
+        <div class="tablehead"><span class="inc">Include</span><span class="ttl">Title</span></div>
+        <div id="mergeList" class="list mergelist"></div>
+      </section>
+    </div><!-- /#modeMerge -->
+
+    <div id="modeRead" hidden>
+      <section class="card">
+        <div class="reader-head">
+          <img id="readCover" class="read-cover hidden" alt="cover" />
+          <div class="reader-meta">
+            <div id="readTitle" class="read-title">Read EPUB</div>
+            <div id="readAuthor" class="read-author"></div>
+          </div>
+          <div class="reader-open">
+            <button id="readOpen" class="ghost sm" type="button">📖 Open EPUB…</button>
+            <input id="readFile" type="file" accept=".epub,application/epub+zip" hidden />
+          </div>
+        </div>
+        <div id="readResume" class="resume hidden">
+          <span class="resume-ico" aria-hidden="true">↻</span>
+          <span id="readResumeMsg" class="resume-msg"></span>
+          <button id="readResumeBtn" class="primary sm">Continue</button>
+          <button id="readResumeStart" class="ghost sm">Start over</button>
+        </div>
+        <div id="readService" class="readservice hidden">
+          <span class="rs-label">Translation</span>
+          <div id="readServiceSeg" class="modes segmented"></div>
+        </div>
+        <div id="readCaptcha" class="resume captcha-bar hidden">
+          <span class="resume-ico" aria-hidden="true">!</span>
+          <span id="readCaptchaMsg" class="resume-msg">Verification needed to fetch this chapter.</span>
+          <button id="readCaptchaOpen" class="primary sm">Open page</button>
+          <button id="readCaptchaCancel" class="ghost sm">Cancel</button>
+        </div>
+      </section>
+
+      <div id="ttsPlayer" class="tts-player hidden">
+        <div id="ttsDrag" class="tts-bar">
+          <span class="tts-grip" title="Drag to move">⠿</span>
+          <button id="ttsPlay" class="primary sm" title="Play / Pause (Space)">▶</button>
+          <span id="ttsNow" class="tts-now">Text-to-speech</span>
+          <button id="ttsCollapse" class="icon-btn" title="Collapse / expand">▾</button>
+        </div>
+        <div id="ttsBody" class="tts-body">
+          <div class="tts-row">
+            <button id="ttsStop" class="ghost sm" title="Stop">■ Stop</button>
+            <button id="ttsPrev" class="ghost sm" title="Previous line">⏮ Line</button>
+            <button id="ttsNext" class="ghost sm" title="Next line">Line ⏭</button>
+          </div>
+          <label class="tts-ctl block">Voice <select id="ttsVoice"></select></label>
+          <div class="tts-row">
+            <label class="tts-ctl">Speed <input id="ttsRate" type="range" min="0.5" max="2" step="0.1" value="1" /></label>
+            <span id="ttsRateVal" class="import-info">1.0×</span>
+          </div>
+          <div class="tts-row wrap">
+            <label class="opt"><input id="ttsFollow" type="checkbox" checked /> <span>Follow while speaking</span></label>
+            <label class="opt"><input id="ttsHighlight" type="checkbox" checked /> <span>Highlight line</span></label>
+          </div>
+          <div id="ttsHint" class="import-hint"><em>Click any line to start speaking from there.</em></div>
+        </div>
+      </div>
+
+      <section class="card reader-body hidden" id="readBodyCard">
+        <div class="reader-grid">
+          <aside class="reader-toc">
+            <div class="tablehead"><span class="ttl">Contents</span></div>
+            <div id="readToc" class="list"></div>
+          </aside>
+          <div class="reader-pane">
+            <div class="reader-navbar">
+              <button id="readPrev" class="ghost sm" title="Previous chapter (←)">← Prev</button>
+              <span id="readChapTitle" class="read-chaptitle"></span>
+              <button id="readNext" class="ghost sm" title="Next chapter (→)">Next →</button>
+            </div>
+            <article id="readContent" class="reader-content"></article>
+          </div>
+        </div>
+      </section>
+      <section class="card"><div id="readStatus" class="status">Open an EPUB from your device to start reading.</div></section>
+    </div><!-- /#modeRead -->
   </div>
 
   <script type="module" src="popup.js"></script>

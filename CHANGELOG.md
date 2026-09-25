@@ -1,5 +1,79 @@
 # Changelog
 
+## 1.11 — 2026-09-25
+
+### Added
+- **Three modes, switchable from the top:** **Novel to EPUB** (the original), **EPUB
+  Merger**, and **Read EPUB**. The last-used mode is remembered.
+- **“Read this novel aloud” button (Novel mode).** Open the extension on a chapter and,
+  instead of packing an EPUB, jump straight into the reader with text-to-speech. It
+  starts on the chapter you opened and fetches each chapter on demand as you read/listen
+  — no full download needed. Reuses the reader’s TTS, follow/highlight, and voice
+  controls. Picks up the **`?service=`** from the opened URL, shows a **Web / Web+ / AI**
+  selector in the reader (wtr-lab) that re-fetches on change, and handles a **CAPTCHA**
+  inline — a clear **“⚠ Hit a CAPTCHA”** warning appears (so you know your Next click
+  registered), it opens the page, and once solved it **auto-closes that tab, returns to
+  the reader, and continues**. Next/Prev no longer desync when a chapter fails to load,
+  and if AI translation hits wtr-lab’s ~10-chapter guest limit it says so and points you
+  to the Web / Web+ selector.
+- **EPUB Merger (fully offline).** Combine EPUBs you already have — no network, no data
+  used. Add two or more files, see one combined chapter list, and arrange it: **drag** to
+  reorder (or ▲/▼), **Sort by number**, **De-dupe** overlaps, tick/untick to include or
+  exclude, and ✕ to remove. Title/author/language and the cover are prefilled from the
+  first file and editable. Export **Save As…** (choose where — you can overwrite an
+  original) or **Quick download** to your Downloads folder. Reuses the same builder as
+  the novel packer, and unique per-file image namespaces keep illustrations correct.
+- **Read EPUB (offline reader) with text-to-speech.** Open any `.epub` from your device
+  and read it in a clean, full-page reader: pick chapters from the contents list, images
+  and all. **Text-to-speech** uses Chrome’s built-in voices (works offline): **Play/
+  Pause** (or Space), **Stop**, **⏮/⏭ line**, a **voice** picker and a **speed** slider,
+  and **click any line to start speaking from there**. Defaults to the **Google US
+  English** voice when the device has it (falling back to another US-English / English
+  voice otherwise); your own voice pick is remembered. The controls live in a **floating,
+  draggable player** that stays put while you scroll and **collapses to a mini bar**
+  (tap to expand). Toggle **Follow while speaking** (auto-scroll to the spoken line) and
+  **Highlight line** independently. **Resume memory** remembers your place per book —
+  reopen a file and it offers *“Resume: Chapter 9 · line 50”* with **Continue** or
+  **Start over**. Player position, voice, speed and toggles are all remembered.
+
+## 1.10 — 2026-09-25
+
+### Added
+- **Import an existing EPUB and fetch only the new chapters.** Already have, say,
+  chapters 1–100 saved as an EPUB? After you **Load & Analyse** the novel, click
+  **⬆ Import EPUB…** and pick that file. Its chapters are read back in and reused, so
+  clicking **Pack EPUB** downloads only the newly-released chapters (e.g. 101–105) and
+  builds one combined book — no re-fetching (and no re-downloading the data) of the
+  chapters you already have. Because the book identity is stable (see 1.9), your reader
+  replaces the old book instead of duplicating it. Reads the extension’s own EPUBs
+  directly; other EPUBs are handled best-effort (store + deflate, via the browser’s
+  native decompression — no added dependencies).
+- **Robust matching that survives inserts, reorders and renames.** Each chapter is now
+  stamped with its source identity (chapter number + URL) when built, and re-import
+  matches by that identity rather than by position — so a chapter inserted or moved in
+  the middle, or an old chapter whose title changed, still lines up correctly. Chapters
+  no longer on the site are skipped; genuinely new ones are fetched.
+- **Re-fetch old chapters an author has revised.** Because a silent edit to an old
+  chapter’s text can’t be detected from the table of contents, you can force a refresh:
+  click a chapter’s green ● to re-download just that one, or use **↻ Re-fetch all** to
+  re-download every imported chapter. Both are reversible until you Pack.
+
+## 1.9.1 — 2026-09-25
+
+### Added
+- **Manage the Recent novels dropdown.** Recent novels are now a collapsible dropdown
+  (with a count). Open it and click one to load it, or use its **×** to remove that
+  single entry. A **Clear** button empties the whole list.
+
+### Changed
+- **File cover thumbnail is always included; one toggle now controls the in-book front
+  pages.** The file’s cover image (the thumbnail your reader/OS shows for the `.epub`) is
+  always embedded whenever a cover URL is present — no checkbox needed. A single
+  **Include cover & title page** option (on by default) controls the *in-book* front
+  matter: the visible cover page the book opens on plus the title/author/synopsis page.
+  Untick it to drop those inside-the-book pages while still keeping the file thumbnail.
+  Existing saved preferences carry over.
+
 ## 1.9 — 2026-09-25
 
 ### Changed
