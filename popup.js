@@ -46,6 +46,7 @@ const S = {
   origTitles: null,   // cached original chapter titles (for the JP↔EN titles toggle)
   enTitles: null,     // cached English-translated chapter titles
   titlesEn: false,    // list currently showing translated titles?
+  metaOrig: null,     // cached original title/author/filename (for the metadata-translate toggle)
   imported: new Set(),// site indices whose content came from an imported EPUB (reused)
   importStash: {},    // site index -> {title, xhtmlBody, imgNames} for reversible re-fetch
   importImgs: null,   // Map(imageName -> record) from the last import
@@ -282,13 +283,17 @@ async function analyse() {
     renderList();
     if ($("importInfo")) $("importInfo").textContent = "";
     if ($("refetchAll")) $("refetchAll").classList.add("hidden");
-    // JP↔EN chapter-title toggle: offer it for non-English sources.
-    S.origTitles = null; S.enTitles = null; S.titlesEn = false;
+    // JP↔EN toggles: offer them for non-English sources.
+    S.origTitles = null; S.enTitles = null; S.titlesEn = false; S.metaOrig = null;
+    const nonEn = !!(meta.origLang && meta.origLang !== "en");
     if ($("translateTitles")) {
-      const nonEn = meta.origLang && meta.origLang !== "en";
       $("translateTitles").classList.toggle("hidden", !nonEn);
       $("translateTitles").textContent = "🌐 Translate titles";
       $("translateTitles").disabled = false;
+    }
+    if ($("translateMetaOpt")) {
+      $("translateMetaOpt").classList.toggle("hidden", !nonEn);
+      if ($("translateMeta")) { $("translateMeta").checked = false; $("translateMeta").disabled = false; }
     }
     $("pack").disabled = false;
     $("reverse").classList.remove("hidden");
@@ -428,6 +433,27 @@ async function toggleTranslateTitles() {
     S.titlesEn = true; btn.textContent = "🇯🇵 Show original";
   }
   applyTitleDisplay();
+}
+
+// Translate the Title / Author fields (and rebuild Filename) to English, or restore.
+async function toggleTranslateMeta() {
+  const box = $("translateMeta");
+  if (box.checked) {
+    S.metaOrig = { title: $("title").value, author: $("author").value, filename: $("filename").value };
+    box.disabled = true;
+    try {
+      const [t, a] = await translateAll([$("title").value || " ", $("author").value || " "], "en", "auto");
+      const nt = (t || "").trim(), na = (a || "").trim();
+      if (nt) $("title").value = nt;
+      if (na) $("author").value = na;
+      if (nt) $("filename").value = sanitizeName(nt);
+    } catch (e) { console.warn("meta translate failed", e); setStatus("Metadata translation failed."); box.checked = false; }
+    box.disabled = false;
+  } else if (S.metaOrig) {
+    $("title").value = S.metaOrig.title;
+    $("author").value = S.metaOrig.author;
+    $("filename").value = S.metaOrig.filename;
+  }
 }
 
 // ---------- chapter filter ----------
@@ -1295,6 +1321,7 @@ async function init() {
   $("selNone").addEventListener("click", () => { document.querySelectorAll(".item input").forEach((c) => (c.checked = false)); updateSelInfo(); });
   $("reverse").addEventListener("click", reverseChapters);
   if ($("translateTitles")) $("translateTitles").addEventListener("click", toggleTranslateTitles);
+  if ($("translateMeta")) $("translateMeta").addEventListener("change", toggleTranslateMeta);
   $("filter").addEventListener("input", filterRows);
   $("filterCheck").addEventListener("click", () => setChecksForShown(true));
   $("filterUncheck").addEventListener("click", () => setChecksForShown(false));
