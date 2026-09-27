@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.5 — 2026-09-28
+
+### Fixed
+- **First/Last chapter pickers line up cleanly on tablets/phones.** The range row could wrap
+  so the "Last" label was stranded at the end of the first line while its dropdown dropped to
+  the next — each label now stays glued to its own dropdown, and the two pickers sit side by
+  side when there's room or stack as whole units when there isn't.
+
 ## 1.12.4 — 2026-09-28
 
 ### Fixed

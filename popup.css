@@ -255,7 +255,11 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 
 /* ---------- range + chapter list ---------- */
 .range { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-.range label { color: var(--muted); font-size: 13px; }
+.range label { color: var(--muted); font-size: 13px; white-space: nowrap; }
+/* Keep each "First <select>" / "Last <select>" together so the label never wraps away from
+   its dropdown; the two pairs sit side by side when there's room, else stack as whole units. */
+.range-pair { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 260px; min-width: 200px; }
+.range-pair select { flex: 1 1 auto; min-width: 0; max-width: none; }
 .range-spacer { flex: 1; }
 .range select {
   background: var(--field); color: var(--fg); border: 1px solid var(--border);
@@ -459,6 +463,7 @@ select.rd-input { cursor: pointer; }
   .row label, .row .rowlbl { width: 100%; text-align: left; }
   input[type="text"] { flex: 1 1 100%; }
   .url-row button, .range select { width: 100%; }
+  .range-pair { flex-basis: 100%; } /* stack First above Last, each label with its own select */
   .coverPreview { order: 3; }
 
   /* button rows: wrap and let buttons share the width instead of overflowing */
