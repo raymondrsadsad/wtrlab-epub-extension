@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.14.0 — 2026-09-28
+
+### Fixed
+- **Read-EPUB mini player no longer vanishes / skates around while scrolling.** The floating
+  text-to-speech player was tied to "immersive" mode, so every scroll-down slid it off-screen
+  (and on mobile a tall player animated across the page). The player now stays put while you
+  read — only the top chapter bar hides. Use its ▾ button to collapse it if you want it smaller.
+- **Packaging can't silently drop a required file again (the 1.13.0 outage).** `pack-zip.sh`
+  now verifies that every relative `import` in the bundled JavaScript actually ships in the
+  zip and fails the build (naming the missing file) if not. 1.13.0 shipped with `selftest.js`
+  missing, which aborted the whole popup module and left every button dead.
+
+### Added
+- **Self-test runs on load.** The offline self-test now runs automatically when the popup
+  opens; if anything fails, a red banner appears (with a Details link to the full report) so a
+  broken build announces itself instead of misbehaving silently.
+- **Chapter fetches retry transient failures.** A timeout or flaky network error on a chapter
+  is now retried with a short exponential backoff before it's marked failed, so a brief hiccup
+  mid-book no longer stubs chapters. (CAPTCHAs still pause and auto-resume as before.)
+- **Built EPUBs are sanity-checked before download.** After packing, the file is re-opened and
+  its chapter count + metadata verified; a mismatch warns you (you can still download) instead
+  of handing over a broken book.
+- **Library backup — Export / Import.** The Library tab can export your whole shelf and
+  settings (recent novels, packed counts, reading progress, follows, glossaries + presets,
+  reader and translation prefs) to one JSON file, and merge it back on another device.
+- **Library "Check for new".** One button checks every library novel for newly released
+  chapters, badges the ones with updates, and gives each an **⟳ Update** button that opens the
+  novel with the new chapters pre-selected — click Pack (or Import your previous EPUB to merge).
+- **Glossary presets + import/export.** Save a set of name/term fixes as a named preset and
+  apply it to any novel, so a series' terms carry between its books; export/import all
+  glossaries and presets as JSON.
+- **Reader: voice pitch + sleep timer.** The text-to-speech player gains a Pitch control and a
+  Sleep timer (5 / 15 / 30 / 60 min or "end of chapter") that stops reading automatically.
+
 ## 1.13.0 — 2026-09-28
 
 ### Added

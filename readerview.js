@@ -12,7 +12,8 @@ const R = {
   imgUrls: new Map(), coverUrl: null,
   chapter: 0, segEls: [], segIndex: 0,
   speaking: false, paused: false,
-  rate: 1, voice: null, userVoice: null, voices: [], utters: [], chunks: [], chunkQueue: 0, spokenUpto: -1, token: 0,
+  rate: 1, pitch: 1, voice: null, userVoice: null, voices: [], utters: [], chunks: [], chunkQueue: 0, spokenUpto: -1, token: 0,
+  sleepTimer: null, sleepAt: 0, sleepTick: null, sleepChapterEnd: false, // sleep timer (per-session, not persisted)
   sentPause: 250, pauseTimer: null, // ms of silence between paragraphs (user-adjustable)
   saveTimer: null,
   follow: true, hl: true, readSymbols: true, collapsed: false, pos: null,
@@ -252,6 +253,7 @@ async function loadChapter(i, seg, speak) {
   if (!R.book || i < 0 || i >= R.book.chapters.length) return;
   if (R.loading) { setStatus("Still loading the previous chapter…"); return; } // ignore rapid clicks
   R.loading = true;
+  const startToken = R.token; // detect a stop/switch that happened while we were fetching
   try {
     try {
       await ensureChapter(i);
@@ -262,7 +264,11 @@ async function loadChapter(i, seg, speak) {
       else setStatus("⚠ " + (e.message || "Could not load this chapter."));
       return;
     }
-    await renderLoaded(i, seg, speak);
+    // If reading was stopped (e.g. you switched modes/tabs) during the fetch, render the
+    // chapter but DON'T auto-speak — otherwise a pending auto-next would start talking after
+    // you've already left.
+    const stillCurrent = (R.token === startToken);
+    await renderLoaded(i, seg, speak && stillCurrent);
   } finally {
     R.loading = false;
   }
@@ -340,8 +346,43 @@ function chunkForSeg(i) {
 // End of a chapter's TTS: auto-advance to the next chapter when enabled, else stop.
 function advanceChapterOrStop() {
   const more = R.chapter < R.book.chapters.length - 1;
+  // Sleep timer set to "end of chapter" — stop here instead of advancing.
+  if (R.sleepChapterEnd) { clearSleep(); stopTts(); setStatus("Sleep timer: stopped at the end of the chapter."); return; }
   if (R.autoNext !== false && more) loadChapter(R.chapter + 1, 0, true);
   else { stopTts(); setStatus(more ? "Finished the chapter." : "Finished the book."); }
+}
+
+// ---- sleep timer (per-session; not persisted) ----
+// Clear only the running timers/state (used when re-arming, so the dropdown keeps its choice).
+function clearSleepTimers() {
+  if (R.sleepTimer) { clearTimeout(R.sleepTimer); R.sleepTimer = null; }
+  if (R.sleepTick) { clearInterval(R.sleepTick); R.sleepTick = null; }
+  R.sleepAt = 0; R.sleepChapterEnd = false;
+}
+// Fully cancel: stop timers and snap the dropdown back to Off (used when the timer fires).
+function clearSleep() {
+  clearSleepTimers();
+  const el = $("ttsSleep"); if (el) el.value = "0";
+  updateSleepInfo();
+}
+function updateSleepInfo() {
+  const info = $("ttsSleepInfo"); if (!info) return;
+  if (R.sleepChapterEnd) { info.textContent = "stops at chapter end"; return; }
+  if (!R.sleepAt) { info.textContent = ""; return; }
+  const left = Math.max(0, R.sleepAt - Date.now());
+  const m = Math.floor(left / 60000), s = Math.floor((left % 60000) / 1000);
+  info.textContent = `${m}:${String(s).padStart(2, "0")} left`;
+}
+function setSleep(value) {
+  clearSleepTimers();
+  if (!value || value === "0") { updateSleepInfo(); return; }
+  if (value === "chapter") { R.sleepChapterEnd = true; updateSleepInfo(); return; }
+  const mins = parseInt(value, 10);
+  if (!isFinite(mins) || mins <= 0) return;
+  R.sleepAt = Date.now() + mins * 60000;
+  R.sleepTimer = setTimeout(() => { clearSleep(); stopTts(); setStatus("Sleep timer: reading stopped."); }, mins * 60000);
+  R.sleepTick = setInterval(updateSleepInfo, 1000);
+  updateSleepInfo();
 }
 // Pause (ms) inserted only at a paragraph boundary; 0 within one long paragraph's pieces.
 function gapBetween(a, b) {
@@ -373,9 +414,15 @@ function playChunk(c, t) {
   if (!chunk || !chunk.text) return;
   const u = new SpeechSynthesisUtterance(spokenText(chunk.text));
   u.rate = R.rate;
+  u.pitch = R.pitch;
   if (R.voice) { u.voice = R.voice; u.lang = R.voice.lang; }
   u.onstart = () => {
-    if (t !== R.token) return;
+    // Stale utterance: we stopped/switched (token bumped) but this chunk was pre-buffered into
+    // the engine and synth.cancel() didn't drop the queued item (happens on Android). If we've
+    // fully STOPPED, kill it the instant it starts so switching modes doesn't leak "the next
+    // paragraph". If instead a NEWER speak is already in progress (e.g. you tapped another
+    // paragraph), don't global-cancel — that would kill the new speech; just ignore this one.
+    if (t !== R.token) { if (!R.speaking) { try { synth.cancel(); } catch (_) {} } return; }
     if (chunk.gi !== R.segIndex) { R.segIndex = chunk.gi; highlight(chunk.gi); saveProgressSoon(); }
     const nx = c + 1;
     if (nx < R.chunks.length && gapBetween(c, nx) === 0) playChunk(nx, t); // pre-buffer next → gapless
@@ -396,12 +443,17 @@ function togglePlay() {
   if (!R.book) return;
   if (!R.speaking) { speakFrom(R.segIndex || 0); return; }
   if (R.paused) {
+    // Resume. speechSynthesis.pause()/resume() is unreliable — especially on Android's shared
+    // system engine and with remote/Google voices, resume() often does nothing and the engine
+    // has silently dropped the utterance, so Play looked dead until you clicked a paragraph.
+    // Restart cleanly from the current paragraph instead (the same path a paragraph-click
+    // takes), which always produces sound.
     R.paused = false;
-    if (synth.paused) synth.resume();
-    else if (!synth.speaking) speakFrom(R.segIndex); // resumed during an inter-paragraph gap
+    speakFrom(R.segIndex);
+    return; // speakFrom already refreshes the Play button
   } else {
     R.paused = true;
-    synth.pause();
+    try { synth.pause(); } catch (_) {}
   }
   updatePlayBtn();
 }
@@ -616,7 +668,7 @@ function closeDisplay() { $("readDisplayPanel").classList.remove("open"); $("rea
 function saveReaderPrefs() {
   if (!store) return;
   try { store.set({ readerPrefs: {
-    follow: R.follow, hl: R.hl, readSymbols: R.readSymbols, autoNext: R.autoNext, rate: R.rate, sentPause: R.sentPause, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed, tocReversed: R.tocReversed,
+    follow: R.follow, hl: R.hl, readSymbols: R.readSymbols, autoNext: R.autoNext, rate: R.rate, pitch: R.pitch, sentPause: R.sentPause, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed, tocReversed: R.tocReversed,
     theme: R.theme, customBg: R.customBg, customFg: R.customFg, fontKey: R.fontKey, importedFont: R.importedFont,
     fontSize: R.fontSize, lineHeight: R.lineHeight, width: R.width, paraGap: R.paraGap, justify: R.justify, bold: R.bold,
   } }); } catch (_) {}
@@ -710,7 +762,7 @@ export function readerReload() {
 }
 
 // Called by popup.js when the user leaves Read mode or closes the page.
-export function readerStop() { stopTts(); saveProgress(); closeDrawer(); closeDisplay(); setImmersive(false); }
+export function readerStop() { stopTts(); clearSleep(); saveProgress(); closeDrawer(); closeDisplay(); setImmersive(false); }
 
 export function initRead() {
   $("readOpen").addEventListener("click", () => $("readFile").click());
@@ -724,6 +776,12 @@ export function initRead() {
   const applyRate = () => { let r = parseFloat($("ttsRate").value); if (!isFinite(r)) r = 1; if (r < 0.5) r = 0.5; if (r > 2) r = 2; R.rate = r; };
   $("ttsRate").addEventListener("input", applyRate);
   $("ttsRate").addEventListener("change", () => { applyRate(); $("ttsRate").value = R.rate.toFixed(1); saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); }); // apply new rate from the current line
+  if ($("ttsPitch")) {
+    const applyPitch = () => { let p = parseFloat($("ttsPitch").value); if (!isFinite(p)) p = 1; if (p < 0) p = 0; if (p > 2) p = 2; R.pitch = p; };
+    $("ttsPitch").addEventListener("input", applyPitch);
+    $("ttsPitch").addEventListener("change", () => { applyPitch(); $("ttsPitch").value = R.pitch.toFixed(1); saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); });
+  }
+  if ($("ttsSleep")) $("ttsSleep").addEventListener("change", (e) => setSleep(e.target.value));
   if ($("ttsPause")) {
     // Number box in SECONDS; stored internally as ms. Takes effect at the next gap.
     const applyPause = () => { let s = parseFloat($("ttsPause").value); if (!isFinite(s) || s < 0) s = 0; if (s > 5) s = 5; R.sentPause = Math.round(s * 1000); };
@@ -746,6 +804,7 @@ export function initRead() {
       if (typeof p.readSymbols === "boolean" && $("ttsSymbols")) { R.readSymbols = p.readSymbols; $("ttsSymbols").checked = p.readSymbols; }
       if (typeof p.autoNext === "boolean" && $("ttsAutoNext")) { R.autoNext = p.autoNext; $("ttsAutoNext").checked = p.autoNext; }
       if (typeof p.rate === "number") { R.rate = p.rate; $("ttsRate").value = p.rate.toFixed(1); }
+      if (typeof p.pitch === "number" && $("ttsPitch")) { R.pitch = p.pitch; $("ttsPitch").value = p.pitch.toFixed(1); }
       if (typeof p.sentPause === "number" && $("ttsPause")) { R.sentPause = p.sentPause; $("ttsPause").value = (p.sentPause / 1000).toFixed(2); }
       if (p.voiceName) R.userVoice = p.voiceName;
       if (p.pos) R.pos = p.pos;
@@ -810,11 +869,13 @@ export function initRead() {
   if ($("readDisplayReset")) $("readDisplayReset").addEventListener("click", () => { Object.assign(R, DISPLAY_DEFAULTS); renderThemeSwatches(); applyDisplay(); saveReaderPrefs(); });
   applyDisplay();
 
-  // Tap the reading area: while immersed → reveal controls (no TTS start);
-  // otherwise, tapping a line speaks from there.
+  // Tap the reading area. Tapping a paragraph always jumps + speaks from there in ONE tap
+  // (and reveals the controls if we were immersed) — previously the first tap was eaten just
+  // to leave immersive mode, so switching paragraph took two taps. Tapping empty space (not a
+  // line) still only reveals the controls.
   $("readContent").addEventListener("click", (e) => {
-    if (R.immersive) { setImmersive(false); R.lastY = window.scrollY; return; }
     const seg = e.target.closest && e.target.closest(".seg");
+    if (R.immersive) { setImmersive(false); R.lastY = window.scrollY; }
     if (!seg) return;
     speakFrom(+seg.dataset.seg);
   });
@@ -827,16 +888,14 @@ export function initRead() {
 
   if (typeof synth !== "undefined" && synth) synth.onvoiceschanged = loadVoices;
 
-  // Android's system TTS is one shared engine: if this tab keeps reading while hidden, its
-  // paragraphs interleave with whatever other tab you switch to. Stop on hide (cancel is
-  // reliable on Android; pause often isn't), remember the spot, and resume it on return.
+  // Android's system TTS is one shared engine: a tab that keeps speaking while hidden
+  // interleaves with whatever tab you switch to. So we STOP speaking whenever this tab is
+  // hidden (cancel is reliable on Android; pause often isn't). We deliberately DON'T
+  // auto-resume when the tab comes back — that surprised you by blasting audio the moment you
+  // tabbed in (or reopened the extension). The reading position is kept, so pressing Play (or
+  // tapping a paragraph) continues from where it stopped.
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (R.speaking && !R.paused) { R.resumeIdx = R.segIndex; R.autoPaused = true; stopTts(); }
-    } else if (R.autoPaused) {
-      R.autoPaused = false;
-      if (typeof R.resumeIdx === "number") speakFrom(R.resumeIdx);
-    }
+    if (document.hidden && R.speaking) stopTts(); // R.segIndex is preserved for a manual resume
   });
 
   // keyboard: only while Read mode is visible and focus isn't on a control

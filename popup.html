@@ -33,6 +33,13 @@
       <button class="modetab" data-mode="library" role="tab">Library</button>
     </nav>
 
+    <div id="stBanner" class="st-banner hidden" role="alert">
+      <span class="st-banner-ico" aria-hidden="true">⚠</span>
+      <span id="stBannerMsg" class="st-banner-msg"></span>
+      <button id="stBannerDetails" type="button" class="st-banner-btn">Details</button>
+      <button id="stBannerDismiss" type="button" class="icon-btn" title="Dismiss" aria-label="Dismiss">✕</button>
+    </div>
+
     <div id="modeNovel">
     <section class="card readaloud-card">
       <button id="readAloud" class="accent wide" type="button">🔊 Read this novel aloud (Text-to-Speech)</button>
@@ -118,6 +125,21 @@
             <button id="glossaryAdd" type="button" class="ghost sm">+ Add term</button>
             <button id="glossarySave" type="button" class="primary sm">Save glossary</button>
             <span id="glossaryInfo" class="import-info"></span>
+          </div>
+          <div class="glossary-presets">
+            <label for="glossaryPreset">Preset
+              <select id="glossaryPreset"><option value="">— none —</option></select>
+            </label>
+            <button id="glossaryPresetApply" type="button" class="ghost sm" title="Load this preset's terms into the editor above">Apply</button>
+            <button id="glossaryPresetDelete" type="button" class="ghost sm" title="Delete the selected preset">Delete</button>
+            <input id="glossaryPresetName" type="text" class="gl-preset-name" placeholder="new preset name" />
+            <button id="glossaryPresetSave" type="button" class="ghost sm" title="Save the terms above as a reusable preset">Save preset</button>
+          </div>
+          <div class="glossary-io">
+            <button id="glossaryExport" type="button" class="ghost sm" title="Download all glossaries + presets as JSON">⤓ Export</button>
+            <button id="glossaryImport" type="button" class="ghost sm" title="Merge a glossary JSON into this scope / presets">⤒ Import</button>
+            <input id="glossaryFile" type="file" accept=".json,application/json" hidden />
+            <span class="import-info">Presets let a series' terms carry between its books.</span>
           </div>
         </div>
       </details>
@@ -263,10 +285,24 @@
           <div class="tts-row">
             <label class="tts-ctl">Speed <input id="ttsRate" type="number" min="0.5" max="2" step="0.1" value="1.0" title="Reading speed" /></label>
             <span class="import-info">×</span>
+            <label class="tts-ctl">Pitch <input id="ttsPitch" type="number" min="0" max="2" step="0.1" value="1.0" title="Voice pitch" /></label>
           </div>
           <div class="tts-row">
             <label class="tts-ctl">Paragraph gap <input id="ttsPause" type="number" min="0" max="5" step="0.05" value="0.25" title="Pause between paragraphs, in seconds" /></label>
             <span class="import-info">seconds</span>
+          </div>
+          <div class="tts-row">
+            <label class="tts-ctl block">Sleep timer
+              <select id="ttsSleep" title="Stop reading after a while">
+                <option value="0">Off</option>
+                <option value="5">5 min</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60">60 min</option>
+                <option value="chapter">End of chapter</option>
+              </select>
+            </label>
+            <span id="ttsSleepInfo" class="import-info"></span>
           </div>
           <div class="tts-row wrap">
             <label class="opt"><input id="ttsFollow" type="checkbox" checked /> <span>Follow while speaking</span></label>
@@ -434,8 +470,17 @@
 
     <div id="modeLibrary" hidden>
       <section class="card">
-        <div class="card-head"><h2>Library</h2></div>
+        <div class="card-head">
+          <h2>Library</h2>
+          <div class="lib-tools">
+            <button id="libCheck" type="button" class="ghost sm" title="Check every novel here for newly released chapters">🔄 Check for new</button>
+            <button id="libExport" type="button" class="ghost sm" title="Download your whole library + settings as a JSON backup">⤓ Export</button>
+            <button id="libImport" type="button" class="ghost sm" title="Restore / merge a library backup">⤒ Import</button>
+            <input id="libFile" type="file" accept=".json,application/json" hidden />
+          </div>
+        </div>
         <div class="import-hint"><em>Every novel you analyse or read shows up here — reopen it, jump back into the reader where you left off, or ★ follow it to be notified when new chapters release.</em></div>
+        <div id="libStatus" class="import-info"></div>
         <div id="libraryList" class="lib-list"></div>
       </section>
     </div><!-- /#modeLibrary -->

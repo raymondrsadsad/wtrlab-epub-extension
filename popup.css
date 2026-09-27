@@ -430,9 +430,10 @@ select.rd-input { cursor: pointer; }
   border-bottom: 1px solid var(--border); box-shadow: var(--shadow);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
 }
-/* immersive: hide the top bar + floating player while reading */
+/* immersive: hide the top bar while reading. The floating TTS player stays put — it's the
+   playback control, and sliding it off-screen on every scroll-down made it vanish and (with
+   a tall player on mobile) skate across the text. Collapse it with ▾ if you want it smaller. */
 #modeRead.immersive .reader-navbar { transform: translateY(-140%); opacity: 0; pointer-events: none; }
-#modeRead.immersive #ttsPlayer { transform: translateY(160%); opacity: 0; pointer-events: none; }
 .reader-content {
   font-family: var(--reader-font, Georgia, "Times New Roman", serif);
   font-size: var(--reader-size, 17px);
@@ -508,8 +509,25 @@ select.rd-input { cursor: pointer; }
 .glossary-row .gl-arrow { color: var(--muted); flex: none; }
 .glossary-row .gl-del { flex: none; padding: 4px 9px; }
 .glossary-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.glossary-presets, .glossary-io { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid var(--border); }
+.glossary-presets label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.glossary-presets select { background: var(--field); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: 4px 6px; max-width: 180px; }
+.gl-preset-name { background: var(--field); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: 5px 8px; font-size: 13px; width: 130px; flex: none; }
+
+/* ---- self-test failure banner ---- */
+.st-banner {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 12px; padding: 10px 12px;
+  border: 1px solid rgba(200, 70, 60, .5); border-radius: var(--radius-sm);
+  background: rgba(200, 70, 60, .12); color: var(--fg);
+}
+.st-banner.hidden { display: none; }
+.st-banner-ico { flex: none; color: #d9534f; font-size: 16px; }
+.st-banner-msg { flex: 1; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.st-banner-btn { flex: none; font-size: 12px; font-weight: 600; color: #d9534f; background: transparent; border: 1px solid rgba(200, 70, 60, .5); border-radius: 7px; padding: 4px 10px; cursor: pointer; }
 
 /* ---- library shelf ---- */
+.lib-tools { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
 .lib-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
 .lib-card { display: flex; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card-2); }
 .lib-cover { width: 52px; height: 74px; object-fit: cover; border-radius: 6px; flex: none; background: var(--field); }
@@ -521,6 +539,7 @@ select.rd-input { cursor: pointer; }
 .lib-new { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700; color: #fff; background: var(--green); border-radius: 999px; padding: 1px 8px; vertical-align: middle; }
 .lib-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .lib-follow.on { color: var(--warn); border-color: var(--warn); }
+.lib-update { flex: none; }
 
 /* ---------- footer + self-test ---------- */
 .appfoot {

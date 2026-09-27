@@ -40,6 +40,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return; // synchronous
   }
 
+  // On-demand "Check for new chapters" from the Library. Checks the given URLs (plus any
+  // followed novels), updates followed badges/notifications, and returns per-URL counts so
+  // the popup can flag new chapters for any library item.
+  if (msg.type === "CHECK_FOLLOWS_NOW") {
+    checkNow(Array.isArray(msg.urls) ? msg.urls : [])
+      .then((results) => sendResponse({ ok: true, results }))
+      .catch((e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
+    return true; // async reply
+  }
+
   // CHECK_FOLLOWS is handled by the offscreen document, not here — ignore it so we don't
   // reply on its channel.
 });
@@ -90,16 +100,24 @@ async function runOffscreenCheck(urls) {
   } finally { try { await chrome.offscreen.closeDocument(); } catch (_) {} }
 }
 
-async function checkFollows() {
+// The scheduled ~12h check: just the followed novels.
+async function checkFollows() { await checkNow([]); }
+
+// Check `extraUrls` and every followed novel for new chapters. Updates followed novels'
+// badges + fires notifications (same rules as the scheduled check) and returns the raw
+// per-URL results so an on-demand caller (the Library) can flag any item, followed or not.
+async function checkNow(extraUrls) {
   let map;
-  try { ({ follows: map } = await chrome.storage.local.get("follows")); } catch (_) { return; }
+  try { ({ follows: map } = await chrome.storage.local.get("follows")); } catch (_) { map = {}; }
   map = map || {};
-  const keys = Object.keys(map).filter((k) => map[k] && map[k].url);
-  if (!keys.length) return;
-  const results = await runOffscreenCheck(keys.map((k) => map[k].url));
+  const followUrls = Object.keys(map).filter((k) => map[k] && map[k].url).map((k) => map[k].url);
+  const urls = Array.from(new Set([...(extraUrls || []), ...followUrls]));
+  if (!urls.length) return [];
+  const results = await runOffscreenCheck(urls);
   const byUrl = new Map(results.map((r) => [r && r.url, r]));
-  for (const k of keys) {
+  for (const k of Object.keys(map)) {
     const f = map[k];
+    if (!f || !f.url) continue;
     const r = byUrl.get(f.url);
     f.lastCheck = Date.now();
     if (!r || r.error || typeof r.count !== "number") continue;
@@ -114,6 +132,7 @@ async function checkFollows() {
     }
   }
   try { await chrome.storage.local.set({ follows: map }); } catch (_) {}
+  return results;
 }
 
 function notifyNew(f, delta) {

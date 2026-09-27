@@ -20,6 +20,16 @@
   // ---------- settings ----------
   const store = (typeof chrome !== "undefined" && chrome.storage) ? chrome.storage.local : null;
 
+  // After the extension is reloaded/updated, THIS content script keeps running in tabs that
+  // were already open, but its chrome.runtime handle is torn down — every chrome.* call then
+  // throws "Extension context invalidated" (or "Cannot read properties of undefined (reading
+  // 'sendMessage' / 'getURL')"). We check this before any such call and tell the user to
+  // reload, instead of spilling errors and half-working. A fresh page load has a live context.
+  function extAlive() {
+    try { return !!(chrome && chrome.runtime && chrome.runtime.id); } catch (_) { return false; }
+  }
+  const RELOAD_MSG = "Extension was updated — reload this page to use the Web Reader.";
+
   // Glossary (term-lock): shared with the extension via chrome.storage "glossaries".
   // We import the SAME translate.js the adapters use, so setGlossary() also corrects
   // adapter-fetched chapter text; the generic page path applies it in requestTranslate.
@@ -32,7 +42,7 @@
     } catch (_) { return String(u || "").split(/[?#]/)[0].replace(/\/+$/, ""); }
   }
   async function loadGlossary() {
-    if (!store) return;
+    if (!store || !extAlive()) return;
     try {
       if (!_TX) _TX = await import(chrome.runtime.getURL("adapters/translate.js"));
       const g = await new Promise((res) => { try { store.get("glossaries", (o) => res((o && o.glossaries) || {})); } catch (_) { res({}); } });
@@ -379,6 +389,7 @@
     if (!b) return;
     const act = b.dataset.act;
     if (act === "collapse" || act === "close") return togglePanel(false); // collapse to bubble (never disable from the page)
+    if (!extAlive()) { setStatus(RELOAD_MSG); return; } // stale tab after an extension update
     if (act === "translate") return translatePage();
     if (act === "original") return toggleOriginal();
     if (act === "read") return startReadAloud("page");
@@ -460,6 +471,7 @@
   // ================================================================= translation
   function requestTranslate(texts, to, from) {
     return new Promise((resolve, reject) => {
+      if (!extAlive()) return reject(new Error(RELOAD_MSG));
       try {
         chrome.runtime.sendMessage({ type: "TRANSLATE_BATCH", texts, to, from }, (resp) => {
           if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
@@ -524,6 +536,7 @@
 
   async function translatePage() {
     if (W.translating) return;
+    if (!extAlive()) { setStatus(RELOAD_MSG); return; } // stale tab after an extension update
     if (W.translated && !W.showingOriginal) { setStatus("Page already translated."); return; }
     W.translating = true;
     setStatus("Translating…");
@@ -666,7 +679,11 @@
     u.rate = CFG.rate || 1;
     if (W.voice) { u.voice = W.voice; u.lang = W.voice.lang; }
     u.onstart = () => {
-      if (t !== W.token) return;
+      // Stale utterance after a stop (see readerview.js): a pre-buffered chunk that cancel()
+      // didn't drop from the engine queue. If we've fully stopped, kill it the moment it starts
+      // so it doesn't leak the next paragraph; if a newer speak is active, just ignore it (a
+      // global cancel would kill the new speech).
+      if (t !== W.token) { if (!W.speaking) { try { W.synth.cancel(); } catch (_) {} } return; }
       if (chunk.bi !== W.blockIdx) { W.blockIdx = chunk.bi; highlightBlock(chunk.bi); }
       const nx = c + 1;
       if (nx < W.chunks.length && gapBetween(c, nx) === 0) playChunk(nx, t); // pre-buffer next → gapless
@@ -690,12 +707,15 @@
       speakFrom(W.blockIdx || 0); return;
     }
     if (W.paused) {
+      // Resume. speechSynthesis.pause()/resume() is unreliable (Android's shared engine and
+      // remote/Google voices often won't resume and drop the utterance), so restart from the
+      // current paragraph — the same reliable path a paragraph-click takes.
       W.paused = false;
-      if (W.synth.paused) W.synth.resume();
-      else if (!W.synth.speaking) speakFrom(W.blockIdx); // resumed during an inter-paragraph gap
+      speakFrom(W.blockIdx);
+      return; // speakFrom refreshes the play buttons
     } else {
       W.paused = true;
-      W.synth.pause();
+      try { W.synth.pause(); } catch (_) {}
     }
     updatePlayBtns();
   }
@@ -829,6 +849,7 @@
   // the reader can offer Prev/Next. `targetUrl` lets Prev/Next fetch a sibling chapter
   // without navigating the page. Adds content.nav = { prevUrl, nextUrl }.
   async function getAdapterContent(targetUrl) {
+    if (!extAlive()) return null; // stale tab after an extension update — fall back / show reload hint
     const url = targetUrl || location.href;
     if (W.adapterUrl === url && W.adapterContent !== undefined) return W.adapterContent;
     W.adapterUrl = url;
@@ -1054,6 +1075,7 @@
 
   // ================================================================= open in extension reader
   function openInExtensionReader() {
+    if (!extAlive()) { setStatus(RELOAD_MSG); return; } // stale tab after an extension update
     try {
       chrome.runtime.sendMessage({ type: "OPEN_IN_READER", url: location.href }, () => void chrome.runtime.lastError);
       setStatus("Opening in the extension reader…");

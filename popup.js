@@ -8,6 +8,10 @@ import { runSelfTest } from "./selftest.js";
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Transient-failure retry policy for chapter fetches (not CAPTCHAs): total attempts and
+// the first backoff (doubles each retry → 800ms, 1600ms).
+const RETRY_MAX = 3;
+const RETRY_BASE_MS = 800;
 
 // fetch with a hard timeout so a stalled request can never hang the whole build
 async function fetchT(url, opts = {}, ms = 25000) {
@@ -237,14 +241,117 @@ function saveGlossary() {
   if (list.length) curGlossaries[k] = list; else delete curGlossaries[k];
   try { store.set({ glossaries: curGlossaries }); } catch (e) {}
   setGlossary(mergedGlossary(S.currentUrl));
+  glossaryMsg(`Saved ${list.length} term${list.length === 1 ? "" : "s"}.`);
+}
+function glossaryMsg(t) {
   const info = $("glossaryInfo");
-  if (info) { info.textContent = `Saved ${list.length} term${list.length === 1 ? "" : "s"}.`; setTimeout(() => { if (info) info.textContent = ""; }, 2500); }
+  if (info) { info.textContent = t; setTimeout(() => { if (info && info.textContent === t) info.textContent = ""; }, 2500); }
+}
+
+// Read the terms currently typed into the editor (unsaved-friendly).
+function rowsToList() {
+  return Array.from(document.querySelectorAll("#glossaryRows .glossary-row"))
+    .map((r) => ({ from: r.querySelector(".gl-from").value.trim(), to: r.querySelector(".gl-to").value }))
+    .filter((p) => p.from);
+}
+
+// ---------- glossary presets ----------
+// Named, reusable term sets ({ name: [{from,to}] }) so a series' terms carry between its
+// books. Stored separately from the active per-scope `glossaries`; applying one just loads
+// its terms into the current scope's editor (then Save writes them like any other terms).
+let curPresets = {};
+function loadPresets(cb) {
+  if (!store) { cb && cb(); return; }
+  try { store.get("glossaryPresets", (o) => { curPresets = (o && o.glossaryPresets) || {}; renderPresetSelect(); cb && cb(); }); }
+  catch (e) { cb && cb(); }
+}
+function renderPresetSelect() {
+  const sel = $("glossaryPreset");
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">— none —</option>`;
+  Object.keys(curPresets).sort((a, b) => a.localeCompare(b)).forEach((name) => {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = `${name} (${curPresets[name].length})`;
+    sel.appendChild(o);
+  });
+  if (cur && curPresets[cur]) sel.value = cur;
+}
+function applyPreset() {
+  const name = $("glossaryPreset") ? $("glossaryPreset").value : "";
+  if (!name || !curPresets[name]) { glossaryMsg("Pick a preset first."); return; }
+  renderGlossaryRows(curPresets[name].slice());
+  glossaryMsg(`Loaded “${name}” — click Save glossary to apply it to this scope.`);
+}
+function savePreset() {
+  if (!store) return;
+  const nameEl = $("glossaryPresetName");
+  const name = (nameEl && nameEl.value.trim()) || ($("glossaryPreset") && $("glossaryPreset").value) || "";
+  if (!name) { glossaryMsg("Type a name for the preset first."); return; }
+  const list = rowsToList();
+  if (!list.length) { glossaryMsg("No terms to save."); return; }
+  curPresets[name] = list;
+  try { store.set({ glossaryPresets: curPresets }); } catch (e) {}
+  if (nameEl) nameEl.value = "";
+  renderPresetSelect();
+  if ($("glossaryPreset")) $("glossaryPreset").value = name;
+  glossaryMsg(`Saved preset “${name}” (${list.length} terms).`);
+}
+function deletePreset() {
+  if (!store) return;
+  const name = $("glossaryPreset") ? $("glossaryPreset").value : "";
+  if (!name || !curPresets[name]) { glossaryMsg("Pick a preset to delete."); return; }
+  delete curPresets[name];
+  try { store.set({ glossaryPresets: curPresets }); } catch (e) {}
+  renderPresetSelect();
+  glossaryMsg(`Deleted preset “${name}”.`);
+}
+
+// ---------- glossary import / export ----------
+function exportGlossaries() {
+  const payload = { app: "novel-to-epub", kind: "glossary", v: 1, exportedAt: new Date().toISOString(),
+    glossaries: curGlossaries || {}, presets: curPresets || {} };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  saveFile(blob, "novel-to-epub-glossary.json", false);
+  glossaryMsg("Exported glossaries + presets.");
+}
+async function importGlossaries(file) {
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || data.kind !== "glossary") { glossaryMsg("Not a glossary export file."); return; }
+    // Merge presets (imported wins on name clash).
+    if (data.presets && typeof data.presets === "object") {
+      curPresets = { ...(curPresets || {}), ...data.presets };
+      try { store && store.set({ glossaryPresets: curPresets }); } catch (e) {}
+      renderPresetSelect();
+    }
+    // Merge glossary scopes; within a scope, dedupe by `from` (imported wins).
+    if (data.glossaries && typeof data.glossaries === "object") {
+      for (const k of Object.keys(data.glossaries)) {
+        const incoming = Array.isArray(data.glossaries[k]) ? data.glossaries[k] : [];
+        const have = Array.isArray(curGlossaries[k]) ? curGlossaries[k] : [];
+        const byFrom = new Map(have.map((p) => [p.from, p]));
+        for (const p of incoming) if (p && p.from) byFrom.set(p.from, { from: p.from, to: p.to == null ? "" : p.to });
+        curGlossaries[k] = Array.from(byFrom.values());
+      }
+      try { store && store.set({ glossaries: curGlossaries }); } catch (e) {}
+      setGlossary(mergedGlossary(S.currentUrl));
+      renderGlossaryRows(currentGlossaryList());
+    }
+    glossaryMsg("Imported glossaries + presets.");
+  } catch (e) {
+    console.error("glossary import failed", e);
+    glossaryMsg("Import failed: " + (e.message || "bad file"));
+  }
 }
 
 // ---------- library (shelf) ----------
 // A view over data already stored: `recent` (title/cover/author), `counts` (chapters at
 // last pack), `readProgress` (last-read), and `follows` (auto-update opt-in). No fetching.
 let curFollows = {};
+// Latest live chapter counts from a "Check for new" run (canonUrl -> count), in memory only.
+let latestCounts = {};
 function loadLibraryData(cb) {
   if (!store) { cb({ recent: [], counts: {}, readProgress: {}, follows: {} }); return; }
   try {
@@ -304,7 +411,12 @@ function renderLibrary() {
       const cover = r.cover
         ? `<img class="lib-cover" src="${escapeHtml(r.cover)}" alt="" />`
         : `<div class="lib-cover lib-cover-empty">📖</div>`;
-      const newBadge = (fol && fol.newCount > 0) ? `<span class="lib-new">+${fol.newCount} new</span>` : "";
+      // "New" count: prefer a followed novel's tracked badge, else the delta between the
+      // last live check and the count at last pack.
+      const curCount = latestCounts[u];
+      const newSincePack = (packed != null && curCount != null && curCount > packed) ? (curCount - packed) : 0;
+      const newN = (fol && fol.newCount > 0) ? fol.newCount : newSincePack;
+      const newBadge = newN > 0 ? `<span class="lib-new">+${newN} new</span>` : "";
       const progLine = prog ? `<div class="lib-prog">Reading: ${escapeHtml(prog.title || "Chapter " + (prog.chapterIndex + 1))} · line ${prog.segIndex + 1}</div>` : "";
       card.innerHTML = `
         ${cover}
@@ -315,6 +427,7 @@ function renderLibrary() {
           <div class="lib-actions">
             <button class="lib-open ghost sm">📖 Open</button>
             <button class="lib-read primary sm">🔊 Read</button>
+            ${newN > 0 ? `<button class="lib-update accent sm" title="Open with the new chapters pre-selected">⟳ Update ${newN}</button>` : ""}
             <button class="lib-follow ghost sm ${fol ? "on" : ""}">${fol ? "★ Following" : "☆ Follow"}</button>
             <button class="lib-remove ghost sm" title="Remove from library">✕</button>
           </div>
@@ -323,11 +436,103 @@ function renderLibrary() {
       if (coverImg) coverImg.addEventListener("error", () => { coverImg.style.visibility = "hidden"; });
       card.querySelector(".lib-open").addEventListener("click", () => { $("url").value = u; if ($("adapter")) $("adapter").value = "auto"; setMode("novel"); analyse(); });
       card.querySelector(".lib-read").addEventListener("click", () => { setMode("web"); if ($("webUrl")) $("webUrl").value = u; openWebReader(u); });
+      const upd = card.querySelector(".lib-update");
+      if (upd) upd.addEventListener("click", () => libraryUpdate(u));
       card.querySelector(".lib-follow").addEventListener("click", () => toggleFollow(r));
       card.querySelector(".lib-remove").addEventListener("click", () => removeRecent(u));
       wrap.appendChild(card);
     });
   });
+}
+
+function setLibStatus(t) { const el = $("libStatus"); if (el) el.textContent = t; }
+
+// Open a novel in Novel mode with its new-since-last-pack chapters pre-selected, so the
+// user just clicks Pack (or Import their existing EPUB first to merge). Reuses analyse()'s
+// existing new-chapter detection (S.newFrom vs S.counts).
+async function libraryUpdate(u) {
+  setMode("novel");
+  $("url").value = u;
+  if ($("adapter")) $("adapter").value = "auto";
+  await analyse();
+  if (S.newFrom != null) {
+    document.querySelectorAll("#list .item input").forEach((cb) => { cb.checked = (+cb.dataset.i) >= S.newFrom; });
+    updateSelInfo();
+    setStatus(`New chapters selected — click “Pack EPUB” (or Import your previous EPUB first to merge).`);
+  }
+}
+
+// On-demand: ask the background page to check every library novel for new chapters (reuses
+// the offscreen count check the scheduled follow-updater uses), then flag them here.
+function libraryCheck() {
+  setLibStatus("Checking for new chapters…");
+  loadLibraryData(({ recent }) => {
+    const urls = recent.map((r) => canonUrl(r.url));
+    if (!urls.length) { setLibStatus("Nothing in the library yet."); return; }
+    try {
+      chrome.runtime.sendMessage({ type: "CHECK_FOLLOWS_NOW", urls }, (resp) => {
+        if (chrome.runtime.lastError || !resp) { setLibStatus("Couldn't check (background page unavailable)."); return; }
+        if (!resp.ok) { setLibStatus("Check failed: " + (resp.error || "")); return; }
+        const results = resp.results || [];
+        if (!results.length) { setLibStatus("Checking isn't available here (needs desktop Chrome)."); return; }
+        latestCounts = {};
+        for (const r of results) if (r && r.url && typeof r.count === "number") latestCounts[canonUrl(r.url)] = r.count;
+        renderLibrary();
+        const withNew = Object.keys(latestCounts).filter((k) => latestCounts[k] > (S.counts[k] || 0)).length;
+        setLibStatus(withNew ? `Done — ${withNew} novel${withNew === 1 ? "" : "s"} with new chapters.` : "Done — no new chapters found.");
+      });
+    } catch (e) { setLibStatus("Couldn't check: " + e.message); }
+  });
+}
+
+// ---------- library backup (export / import) ----------
+const LIB_KEYS = ["recent", "counts", "readProgress", "follows", "glossaries", "glossaryPresets", "readerPrefs", "prefs", "webWidget", "txEngine"];
+function exportLibrary() {
+  if (!store) return;
+  try {
+    store.get(LIB_KEYS, (o) => {
+      const payload = { app: "novel-to-epub", kind: "library", v: 1, exportedAt: new Date().toISOString(), data: o || {} };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      saveFile(blob, "novel-to-epub-library.json", false);
+      setLibStatus("Exported library + settings.");
+    });
+  } catch (e) { setLibStatus("Export failed: " + e.message); }
+}
+async function importLibrary(file) {
+  if (!file || !store) return;
+  setLibStatus(`Reading “${file.name}”…`);
+  try {
+    const parsed = JSON.parse(await file.text());
+    if (!parsed || parsed.kind !== "library" || !parsed.data) { setLibStatus("Not a library export file."); return; }
+    const d = parsed.data;
+    store.get(LIB_KEYS, (cur) => {
+      cur = cur || {};
+      const out = {};
+      // recent: combine, newest-first, dedupe by canonical URL, cap.
+      const combined = [...(cur.recent || []), ...(d.recent || [])].filter((r) => r && r.url).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+      if (combined.length) out.recent = dedupeRecent(combined).slice(0, 50);
+      // read progress: keep the most-recently-updated entry per book.
+      if (d.readProgress && typeof d.readProgress === "object") {
+        const merged = { ...(cur.readProgress || {}) };
+        for (const k in d.readProgress) {
+          const a = merged[k], b = d.readProgress[k];
+          if (!a || ((b && b.updatedAt) || 0) > ((a && a.updatedAt) || 0)) merged[k] = b;
+        }
+        out.readProgress = merged;
+      }
+      // everything else: shallow merge, imported wins on key clash.
+      ["counts", "follows", "glossaries", "glossaryPresets", "webWidget", "prefs", "readerPrefs", "txEngine"].forEach((k) => {
+        if (d[k] && typeof d[k] === "object") out[k] = { ...(cur[k] || {}), ...d[k] };
+      });
+      store.set(out, () => {
+        if (out.counts) S.counts = out.counts;
+        loadGlossaries(() => { if ($("glossaryBox")) renderGlossaryRows(currentGlossaryList()); });
+        loadPresets();
+        renderLibrary();
+        setLibStatus("Imported — library + settings merged. Reopen the reader/glossary to see restored prefs.");
+      });
+    });
+  } catch (e) { console.error("library import failed", e); setLibStatus("Import failed: " + (e.message || "bad file")); }
 }
 
 function setStatus(t) { $("status").textContent = t; }
@@ -382,6 +587,23 @@ function initSelfTest() {
   $("selfTestRun") && $("selfTestRun").addEventListener("click", runSelfTestUI);
   // Click the dimmed backdrop (the panel itself, outside the card) to close.
   panel.addEventListener("click", (e) => { if (e.target === panel) close(); });
+  // Failure banner: "Details" opens the panel, "✕" dismisses it.
+  $("stBannerDetails") && $("stBannerDetails").addEventListener("click", () => { $("stBanner").classList.add("hidden"); open(); });
+  $("stBannerDismiss") && $("stBannerDismiss").addEventListener("click", () => $("stBanner").classList.add("hidden"));
+}
+
+// Run the offline self-test once on startup and raise a red banner if anything fails, so a
+// broken build announces itself instead of silently misbehaving. Fully guarded — the check
+// can never itself break the popup. (A broken ES import can't be caught here since it would
+// stop this whole module from running; the pack-zip guardrail covers that case.)
+async function selfTestOnLoad() {
+  const show = (msg) => { const b = $("stBanner"); if (!b) return; $("stBannerMsg").textContent = msg; b.classList.remove("hidden"); };
+  try {
+    const out = await runSelfTest({ online: false });
+    if (out.failed > 0) show(`Self-test failed (${out.failed}/${out.results.length}) — this build may be broken.`);
+  } catch (e) {
+    show("Self-test crashed on load — this build may be broken.");
+  }
 }
 
 async function runSelfTestUI() {
@@ -1274,16 +1496,31 @@ async function runPack() {
       if (!claim) return;
       const idx = claim.index;
       setRowStatus(idx, "loading");
-      try {
-        const res = await S.adapter.getChapter(claim.chapter, opts);
-        if (S.runId !== myRun) return; // superseded (user switched novels) — drop result
+      // Retry transient failures (timeouts, flaky 5xx, dropped connections) with an
+      // exponential backoff before giving up — a hiccup mid-book no longer stubs the
+      // chapter. A CAPTCHA is NOT transient: it pauses the run immediately.
+      let res = null, lastErr = null;
+      for (let attempt = 0; attempt < RETRY_MAX; attempt++) {
+        try { res = await S.adapter.getChapter(claim.chapter, opts); break; }
+        catch (e) {
+          if (S.runId !== myRun) return; // superseded (user switched novels) — drop result
+          if (e.name === "CaptchaError") { paused = true; setRowStatus(idx, ""); return; }
+          lastErr = e;
+          if (attempt < RETRY_MAX - 1) {
+            const wait = RETRY_BASE_MS * Math.pow(2, attempt);
+            setStatus(`Chapter ${idx + 1} failed (${e.message || "error"}) — retrying ${attempt + 1}/${RETRY_MAX - 1} in ${Math.round(wait / 1000)}s…`);
+            await sleep(wait);
+            if (S.runId !== myRun || S.cancel || paused) return; // bail cleanly during the backoff
+          }
+        }
+      }
+      if (S.runId !== myRun) return; // superseded — ignore
+      if (res) {
         S.results[idx] = res;
         S.failed.delete(idx);
         setRowStatus(idx, "ok");
-      } catch (e) {
-        if (S.runId !== myRun) return; // superseded — ignore
-        if (e.name === "CaptchaError") { paused = true; setRowStatus(idx, ""); return; }
-        console.error("chapter failed", idx, e);
+      } else {
+        console.error("chapter failed", idx, lastErr);
         S.results[idx] = { title: (S.chapters[idx] && S.chapters[idx].title) || `Chapter ${idx + 1}`, blocks: [{ type: "text", text: "[Failed to load this chapter.]" }] };
         S.failed.add(idx);
         setRowStatus(idx, "fail");
@@ -1376,6 +1613,17 @@ async function finishPack() {
   };
   const blob = buildEpub(meta, chapters, images);
   const fname = sanitizeName($("filename").value) + ".epub";
+  // Sanity-check the built file by reading it back before we offer Download: catches a
+  // packaging regression (wrong chapter count, missing metadata) instead of shipping a
+  // broken EPUB. Never blocks — we keep the blob and just warn if it looks off.
+  let validWarn = "";
+  try {
+    const parsed = await parseEpub(await blob.arrayBuffer());
+    if (parsed.count !== chapters.length) validWarn = `parsed ${parsed.count}/${chapters.length} chapters`;
+    else if (!(parsed.meta && parsed.meta.title)) validWarn = "no title in the packaged metadata";
+  } catch (e) {
+    validWarn = "couldn't be re-opened (" + ((e && e.message) || "parse error") + ")";
+  }
   // Don't auto-download — hold the file and let the user click Download.
   S.lastBlob = blob;
   S.lastName = fname;
@@ -1391,14 +1639,15 @@ async function finishPack() {
     try { store.set({ counts: S.counts }); } catch (e) {}
     updateFollowBaseline(S.currentUrl, S.chapters.length);
   }
+  const warn = validWarn ? `⚠ Built EPUB failed a sanity check (${validWarn}) — you can still download it. ` : "";
   const failN = S.failed.size;
   if (failN) {
     $("retryFailed").textContent = `Retry ${failN} failed`;
     $("retryFailed").classList.remove("hidden");
-    setStatus(`Ready — ${chapters.length} chapters, ${failN} failed. Download, or Retry failed.`);
+    setStatus(`${warn}Ready — ${chapters.length} chapters, ${failN} failed. Download, or Retry failed.`);
   } else {
     $("retryFailed").classList.add("hidden");
-    setStatus(`Ready — ${chapters.length} chapters, ${images.length} images. Click “Download EPUB”.`);
+    setStatus(`${warn}Ready — ${chapters.length} chapters, ${images.length} images. Click “Download EPUB”.`);
   }
 }
 
@@ -1670,6 +1919,23 @@ async function init() {
   if ($("glossaryAdd")) $("glossaryAdd").addEventListener("click", () => addGlossaryRow("", ""));
   if ($("glossarySave")) $("glossarySave").addEventListener("click", saveGlossary);
   if ($("glossaryScope")) $("glossaryScope").addEventListener("change", () => renderGlossaryRows(currentGlossaryList()));
+  // glossary presets + import/export
+  if ($("glossaryPresetApply")) $("glossaryPresetApply").addEventListener("click", applyPreset);
+  if ($("glossaryPresetSave")) $("glossaryPresetSave").addEventListener("click", savePreset);
+  if ($("glossaryPresetDelete")) $("glossaryPresetDelete").addEventListener("click", deletePreset);
+  if ($("glossaryExport")) $("glossaryExport").addEventListener("click", exportGlossaries);
+  if ($("glossaryImport") && $("glossaryFile")) {
+    $("glossaryImport").addEventListener("click", () => $("glossaryFile").click());
+    $("glossaryFile").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; importGlossaries(f); e.target.value = ""; });
+  }
+  loadPresets();
+  // library tools
+  if ($("libCheck")) $("libCheck").addEventListener("click", libraryCheck);
+  if ($("libExport")) $("libExport").addEventListener("click", exportLibrary);
+  if ($("libImport") && $("libFile")) {
+    $("libImport").addEventListener("click", () => $("libFile").click());
+    $("libFile").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; importLibrary(f); e.target.value = ""; });
+  }
   $("filter").addEventListener("input", filterRows);
   $("filterCheck").addEventListener("click", () => setChecksForShown(true));
   $("filterUncheck").addEventListener("click", () => setChecksForShown(false));
@@ -1702,6 +1968,7 @@ async function init() {
   initMerge();
   initRead();
   initSelfTest();
+  selfTestOnLoad(); // fire-and-forget: raises a banner if the build is broken
 
   // Load saved settings + any interrupted pack before auto-analysing.
   await loadPrefsAndResume();
