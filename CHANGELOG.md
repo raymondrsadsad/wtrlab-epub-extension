@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.12.4 — 2026-09-28
+
+### Fixed
+- **Read-aloud no longer jumbles across browser tabs (mobile).** Android has one shared
+  text-to-speech engine, so a background tab that kept speaking interleaved its paragraphs
+  with the tab you were actually reading. Each reader now stops speaking when its tab is
+  hidden and resumes from the same spot when you return, so only the tab you're looking at
+  reads.
+- **"Translate page" now translates menus that open later (e.g. Kakuyomu's 目次 on mobile).**
+  On phones the table-of-contents drawer is built only when you open it — after the one-time
+  translation pass — so its episode titles stayed Japanese (they translated fine on desktop,
+  where the list is always present). Translation now also catches text added after the first
+  pass (drawers, next-chapter navigation, lazy lists).
+
 ## 1.12.3 — 2026-09-28
 
 ### Fixed

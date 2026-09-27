@@ -827,6 +827,18 @@ export function initRead() {
 
   if (typeof synth !== "undefined" && synth) synth.onvoiceschanged = loadVoices;
 
+  // Android's system TTS is one shared engine: if this tab keeps reading while hidden, its
+  // paragraphs interleave with whatever other tab you switch to. Stop on hide (cancel is
+  // reliable on Android; pause often isn't), remember the spot, and resume it on return.
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (R.speaking && !R.paused) { R.resumeIdx = R.segIndex; R.autoPaused = true; stopTts(); }
+    } else if (R.autoPaused) {
+      R.autoPaused = false;
+      if (typeof R.resumeIdx === "number") speakFrom(R.resumeIdx);
+    }
+  });
+
   // keyboard: only while Read mode is visible and focus isn't on a control
   document.addEventListener("keydown", (e) => {
     if ($("modeRead").hidden) return;

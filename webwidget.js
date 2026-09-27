@@ -294,6 +294,22 @@
     // Click a paragraph on the live page to read aloud from there (in-place mode).
     if (!W._pageClickBound) { document.addEventListener("click", onPageClickToRead, true); W._pageClickBound = true; }
 
+    // Android's system TTS is a single shared engine: a backgrounded tab that keeps
+    // speaking interleaves its paragraphs with the tab you're now reading. So when this
+    // tab is hidden, stop it (cancel is reliable on Android; pause often isn't) and
+    // remember where it was; resume from there when the tab is shown again.
+    if (!W._visBound) {
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) {
+          if (W.speaking && !W.paused) { W.resumeIdx = W.blockIdx; W.autoPaused = true; stopTts(); }
+        } else if (W.autoPaused) {
+          W.autoPaused = false;
+          if (typeof W.resumeIdx === "number") speakFrom(W.resumeIdx);
+        }
+      });
+      W._visBound = true;
+    }
+
     // Build the TTS controls (voice/speed/gap + tick options) up front so they're
     // always visible — not only after Read aloud starts.
     const pbar = panel.querySelector('[data-tts="panel"]');
@@ -458,23 +474,52 @@
   // ever change a text node's characters — never an element's structure — so buttons
   // and links keep their handlers and stay clickable while their labels turn English.
   const TX_SKIP_TAGS = /^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA|CODE|PRE|SVG|CANVAS)$/;
+  // A text node is translatable if it has letters and isn't ours / a skip tag / editable.
+  function okTextNode(n) {
+    const t = n.nodeValue;
+    if (!t || !t.trim()) return false;
+    const p = n.parentElement;
+    if (!p || p.closest("#wr-root")) return false;
+    if (TX_SKIP_TAGS.test(p.tagName)) return false;
+    if (p.closest("[contenteditable=true], [translate=no], .notranslate")) return false;
+    // Skip strings with no letters (pure numbers / punctuation / symbols).
+    try { if (!/\p{L}/u.test(t)) return false; } catch (_) { /* older engines: accept */ }
+    return true;
+  }
   function collectTextNodes(root) {
     const nodes = [];
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(n) {
-        const t = n.nodeValue;
-        if (!t || !t.trim()) return NodeFilter.FILTER_REJECT;
-        const p = n.parentElement;
-        if (!p || p.closest("#wr-root")) return NodeFilter.FILTER_REJECT;
-        if (TX_SKIP_TAGS.test(p.tagName)) return NodeFilter.FILTER_REJECT;
-        if (p.closest("[contenteditable=true], [translate=no], .notranslate")) return NodeFilter.FILTER_REJECT;
-        // Skip strings with no letters (pure numbers / punctuation / symbols).
-        try { if (!/\p{L}/u.test(t)) return NodeFilter.FILTER_REJECT; } catch (_) { /* older engines: accept */ }
-        return NodeFilter.FILTER_ACCEPT;
-      },
+      acceptNode(n) { return okTextNode(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; },
     });
     let n; while ((n = walker.nextNode())) nodes.push(n);
     return nodes;
+  }
+
+  // Translate a set of text nodes in place and record them so "Show original" can undo it.
+  // Skips nodes we've already handled; pauses the mutation observer around our own writes so
+  // they don't loop back in as "new" nodes. Returns how many were newly translated.
+  async function applyTranslationTo(nodes) {
+    if (!W.txNodes) W.txNodes = [];
+    if (!W.txSet) W.txSet = new Set();
+    const fresh = nodes.filter((n) => n && n.isConnected && !W.txSet.has(n) && okTextNode(n));
+    if (!fresh.length) return 0;
+    // Preserve each node's leading/trailing whitespace; translate the trimmed core.
+    const parts = fresh.map((node) => {
+      const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(node.nodeValue) || ["", "", node.nodeValue, ""];
+      return { node, lead: m[1], core: m[2], trail: m[3] };
+    });
+    const out = await requestTranslate(parts.map((p) => p.core), CFG.targetLang, "auto");
+    if (W.txObserver) W.txObserver.disconnect(); // don't let our own edits retrigger us
+    parts.forEach((p, i) => {
+      const tr = out[i];
+      if (tr == null) return;
+      const trVal = p.lead + tr + p.trail;
+      W.txNodes.push({ node: p.node, orig: p.node.nodeValue, tr: trVal });
+      W.txSet.add(p.node);
+      if (!W.showingOriginal) p.node.nodeValue = trVal;
+    });
+    if (W.txObserver && W.translated && !W.showingOriginal) reconnectTxObserver();
+    return parts.length;
   }
 
   async function translatePage() {
@@ -485,23 +530,13 @@
     try {
       const nodes = collectTextNodes(document.body);
       if (!nodes.length) { setStatus("No readable text found on this page."); return; }
-      // Preserve each node's leading/trailing whitespace; translate the trimmed core.
-      const parts = nodes.map((node) => {
-        const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(node.nodeValue) || ["", "", node.nodeValue, ""];
-        return { node, lead: m[1], core: m[2], trail: m[3] };
-      });
-      const out = await requestTranslate(parts.map((p) => p.core), CFG.targetLang, "auto");
-      W.txNodes = [];
-      parts.forEach((p, i) => {
-        const tr = out[i];
-        if (tr == null) return;
-        const trVal = p.lead + tr + p.trail;
-        W.txNodes.push({ node: p.node, orig: p.node.nodeValue, tr: trVal });
-        p.node.nodeValue = trVal;
-      });
+      await applyTranslationTo(nodes);
       W.translated = true; W.showingOriginal = false;
       const orig = W.panel.querySelector('[data-act="original"]');
       if (orig) { orig.disabled = false; orig.textContent = "Show original"; }
+      // Keep translating text that appears later — e.g. Kakuyomu's 目次 (table of contents)
+      // drawer on mobile is rendered only when opened, so a one-shot pass misses it.
+      startTxObserver();
       setStatus(`Translated ${W.txNodes.length} items → ${langName(CFG.targetLang)}.`);
     } catch (e) {
       console.warn("[WebReader] translate failed", e);
@@ -509,6 +544,43 @@
     } finally {
       W.translating = false;
     }
+  }
+
+  // Watch for text added after the first pass (drawers, SPA chapter nav, lazy lists) and
+  // translate it too. Debounced; guarded so our own writes never feed back in.
+  function reconnectTxObserver() {
+    if (W.txObserver) W.txObserver.observe(document.body, { childList: true, subtree: true });
+  }
+  function scheduleTxFlush() {
+    if (W.txTimer) clearTimeout(W.txTimer);
+    W.txTimer = setTimeout(async () => {
+      W.txTimer = null;
+      if (!W.translated || W.showingOriginal || !W.txPending || !W.txPending.size) { W.txPending && W.txPending.clear(); return; }
+      const batch = Array.from(W.txPending); W.txPending.clear();
+      try { await applyTranslationTo(batch); } catch (e) { console.warn("[WebReader] dynamic translate failed", e); }
+    }, 400);
+  }
+  function startTxObserver() {
+    if (!W.txPending) W.txPending = new Set();
+    if (W.txObserver) { reconnectTxObserver(); return; }
+    W.txObserver = new MutationObserver((muts) => {
+      for (const mu of muts) {
+        for (const node of mu.addedNodes) {
+          if (node.nodeType === 3) { if (okTextNode(node)) W.txPending.add(node); }
+          else if (node.nodeType === 1) {
+            if (node.closest && node.closest("#wr-root")) continue;
+            for (const tn of collectTextNodes(node)) W.txPending.add(tn);
+          }
+        }
+      }
+      if (W.txPending.size) scheduleTxFlush();
+    });
+    reconnectTxObserver();
+  }
+  function stopTxObserver() {
+    if (W.txObserver) W.txObserver.disconnect();
+    if (W.txTimer) { clearTimeout(W.txTimer); W.txTimer = null; }
+    W.txPending && W.txPending.clear();
   }
 
   function toggleOriginal() {
@@ -520,6 +592,8 @@
       rec.node.nodeValue = W.showingOriginal ? rec.orig : rec.tr;
     }
     if (btn) btn.textContent = W.showingOriginal ? "Show translation" : "Show original";
+    // Don't translate newly-added text while the user is viewing the original.
+    if (W.showingOriginal) stopTxObserver(); else if (W.translated) startTxObserver();
     setStatus(W.showingOriginal ? "Showing original text." : "Showing translation.");
   }
 
