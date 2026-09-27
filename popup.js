@@ -4,6 +4,7 @@ import { parseEpub } from "./epubread.js";
 import { initMerge, saveFile } from "./mergeview.js";
 import { initRead, readerStop, openLive, readerReload } from "./readerview.js";
 import { translateAll, setGlossary } from "./adapters/translate.js";
+import { runSelfTest } from "./selftest.js";
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -363,6 +364,59 @@ function applyTheme(theme) {
 
 // Top-level mode switcher: novel | merge | read.
 let currentMode = "novel";
+// ---------- self-test ----------
+// Wires the footer's 🧪 Self-test button to the offline test suite in selftest.js
+// and renders a pass/fail list, so releases can be sanity-checked without manual
+// clicking. Also fills the footer with the manifest version.
+function initSelfTest() {
+  try {
+    const v = chrome.runtime.getManifest().version;
+    if ($("footVersion")) $("footVersion").textContent = "v" + v;
+  } catch (e) {}
+  const panel = $("selfTestPanel");
+  if (!panel) return;
+  const open = () => { panel.classList.remove("hidden"); runSelfTestUI(); };
+  const close = () => panel.classList.add("hidden");
+  $("selfTest") && $("selfTest").addEventListener("click", open);
+  $("selfTestClose") && $("selfTestClose").addEventListener("click", close);
+  $("selfTestRun") && $("selfTestRun").addEventListener("click", runSelfTestUI);
+  // Click the dimmed backdrop (the panel itself, outside the card) to close.
+  panel.addEventListener("click", (e) => { if (e.target === panel) close(); });
+}
+
+async function runSelfTestUI() {
+  const list = $("selfTestList"), summary = $("selfTestSummary"), runBtn = $("selfTestRun");
+  if (!list) return;
+  const online = !!($("selfTestOnline") && $("selfTestOnline").checked);
+  if (runBtn) { runBtn.disabled = true; runBtn.textContent = "Running…"; }
+  if (summary) { summary.textContent = ""; summary.className = "import-info"; }
+  list.innerHTML = `<div class="import-info">Running tests…</div>`;
+  let out;
+  try {
+    out = await runSelfTest({ online });
+  } catch (e) {
+    list.innerHTML = `<div class="st-row bad"><span class="st-mark">✗</span><span class="st-body"><span class="st-name">Self-test crashed</span><span class="st-detail">${escapeHtml((e && e.message) || String(e))}</span></span></div>`;
+    if (runBtn) { runBtn.disabled = false; runBtn.textContent = "Run tests"; }
+    return;
+  }
+  list.innerHTML = out.results.map((r) => `
+    <div class="st-row ${r.ok ? "good" : "bad"}">
+      <span class="st-mark">${r.ok ? "✓" : "✗"}</span>
+      <span class="st-body">
+        <span class="st-name">${escapeHtml(r.name)}</span>
+        <span class="st-detail">${escapeHtml(r.detail)}</span>
+      </span>
+      <span class="st-ms">${Math.round(r.ms)}ms</span>
+    </div>`).join("");
+  if (summary) {
+    summary.textContent = out.failed
+      ? `${out.failed} failed, ${out.passed} passed · ${Math.round(out.ms)}ms`
+      : `All ${out.passed} passed · ${Math.round(out.ms)}ms`;
+    summary.className = "import-info " + (out.failed ? "st-sum-bad" : "st-sum-good");
+  }
+  if (runBtn) { runBtn.disabled = false; runBtn.textContent = "Run again"; }
+}
+
 function setMode(mode) {
   if (!["novel", "merge", "read", "web", "library"].includes(mode)) mode = "novel";
   if (mode !== "read" && currentMode === "read") { try { readerStop(); } catch (e) {} try { cancelReaderCaptcha(); } catch (e) {} }
@@ -1647,6 +1701,7 @@ async function init() {
   document.querySelectorAll("#modeTabs .modetab").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
   initMerge();
   initRead();
+  initSelfTest();
 
   // Load saved settings + any interrupted pack before auto-analysing.
   await loadPrefsAndResume();

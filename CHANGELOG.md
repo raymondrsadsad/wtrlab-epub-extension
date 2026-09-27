@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.13.0 — 2026-09-28
+
+### Added
+- **Built-in Self-test (no more manual testing every release).** A new **🧪 Self-test**
+  button in the footer (with the version number) runs the real pipelines on synthetic
+  data and reports pass/fail: EPUB build → re-read round-trip, special-character XML
+  escaping, cover/inline image byte preservation, deterministic book id, adapter
+  auto-detection (wtr-lab / Kakuyomu / generic), adapter options, glossary replacement
+  (longest-match-wins), and HTML-entity decoding. All checks are offline; an optional
+  tick-box adds a live Google-translation check. Run it after any change to catch
+  regressions before shipping.
+
 ## 1.12.5 — 2026-09-28
 
 ### Fixed

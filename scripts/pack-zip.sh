@@ -14,7 +14,7 @@ rm -f "$out"
 
 zip -r -X "$out" \
   manifest.json background.js popup.html popup.css popup.js \
-  epub.js epubread.js mergeview.js readerview.js \
+  epub.js epubread.js mergeview.js readerview.js selftest.js \
   webwidget.js webwidget.css \
   offscreen.html offscreen.js \
   adapters icons \

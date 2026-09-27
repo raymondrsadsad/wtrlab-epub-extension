@@ -439,6 +439,29 @@
         <div id="libraryList" class="lib-list"></div>
       </section>
     </div><!-- /#modeLibrary -->
+
+    <footer class="appfoot">
+      <span class="foot-ver">Novel&nbsp;to&nbsp;EPUB <span id="footVersion">—</span></span>
+      <span class="foot-spacer"></span>
+      <button id="selfTest" class="ghost sm" type="button"
+        title="Run built-in checks (EPUB build/read, adapters, glossary, entities) — no manual testing needed">🧪 Self-test</button>
+    </footer>
+
+    <div id="selfTestPanel" class="selftest hidden" role="dialog" aria-label="Self-test results">
+      <section class="card selftest-card">
+        <div class="card-head">
+          <h2>Self-test</h2>
+          <button id="selfTestClose" class="icon-btn" title="Close" aria-label="Close">✕</button>
+        </div>
+        <div class="import-hint"><em>Runs the real build/read, adapter and text pipelines on synthetic data — a quick check before you ship or after a change. All offline unless you tick the online box.</em></div>
+        <label class="opt"><input id="selfTestOnline" type="checkbox" /> <span>Also check live translation <em>(uses the network; may hit rate limits)</em></span></label>
+        <div class="selftest-actions">
+          <button id="selfTestRun" class="primary sm" type="button">Run tests</button>
+          <span id="selfTestSummary" class="import-info"></span>
+        </div>
+        <div id="selfTestList" class="selftest-list"></div>
+      </section>
+    </div>
   </div>
 
   <script type="module" src="popup.js"></script>
