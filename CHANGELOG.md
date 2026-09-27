@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.12.2 — 2026-09-27
+
+### Fixed
+- **Reader toolbar stays reachable while scrolling (mobile).** The ☰ / Aa / Prev / Next bar
+  now pins to the top of the screen once you scroll past it, instead of relying on CSS
+  sticky (which some Android browsers ignore). It still tucks away while you scroll down
+  and comes back when you scroll up a little or tap the page.
+- **Mode tabs no longer run off the screen on phones.** Swipe the tab row sideways to reach
+  Web Reader and Library.
+
+## 1.12.1 — 2026-09-27
+
+### Fixed
+- **Works on Android browsers (Quetta, Kiwi-style).** The background worker no longer
+  crashes when the browser lacks alarms, notifications or offscreen documents; those
+  features just switch off quietly. **Download EPUB** and the Merger's export fall back to
+  a normal browser download when `chrome.downloads` is missing or fails, and returning to
+  the tool tab after a CAPTCHA no longer throws where there are no browser windows.
+
 ## 1.11.1 — 2026-09-26
 
 ### Changed

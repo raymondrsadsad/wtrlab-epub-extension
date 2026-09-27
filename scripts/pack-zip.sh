@@ -13,7 +13,10 @@ mkdir -p dist
 rm -f "$out"
 
 zip -r -X "$out" \
-  manifest.json background.js popup.html popup.css popup.js epub.js \
+  manifest.json background.js popup.html popup.css popup.js \
+  epub.js epubread.js mergeview.js readerview.js \
+  webwidget.js webwidget.css \
+  offscreen.html offscreen.js \
   adapters icons \
   -x '*/.DS_Store' >/dev/null
 

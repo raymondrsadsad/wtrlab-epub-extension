@@ -1,6 +1,7 @@
 // Read EPUB — an offline reader with text-to-speech and per-book resume memory.
 // Uses parseEpub to unzip locally; nothing is fetched.
 import { parseEpub } from "./epubread.js";
+import { translateAll } from "./adapters/translate.js";
 
 const $ = (id) => document.getElementById(id);
 const store = (typeof chrome !== "undefined" && chrome.storage) ? chrome.storage.local : null;
@@ -11,18 +12,64 @@ const R = {
   imgUrls: new Map(), coverUrl: null,
   chapter: 0, segEls: [], segIndex: 0,
   speaking: false, paused: false,
-  rate: 1, voice: null, userVoice: null, voices: [], utters: [], chunks: [], chunkQueue: 0, token: 0,
+  rate: 1, voice: null, userVoice: null, voices: [], utters: [], chunks: [], chunkQueue: 0, spokenUpto: -1, token: 0,
+  sentPause: 250, pauseTimer: null, // ms of silence between paragraphs (user-adjustable)
   saveTimer: null,
-  follow: true, hl: true, collapsed: false, pos: null,
+  follow: true, hl: true, readSymbols: true, collapsed: false, pos: null,
   provider: null,   // live mode: (index) => Promise<{title, xhtmlBody, images}>
   loading: false,   // a chapter fetch is in flight (guards rapid Next/Prev)
   tocReversed: false, // Contents list shown newest-first (357→1)
+  tocTranslated: false, tocTitlesEn: null, // Contents titles translated to English
+  autoNext: true, // auto-advance to the next chapter when TTS finishes one
   immersive: false, // chrome (top bar + player) hidden while reading
   lastY: 0,         // last scroll position (for hide/show direction)
   progScroll: 0,    // timestamp of a programmatic scroll (TTS follow) to ignore
+  // display prefs (font / size / line-height / reading theme) — all local, no network
+  theme: "default", customBg: "#ffffff", customFg: "#111111",
+  fontKey: "", importedFont: null, // importedFont: { name, dataUrl } from "Import font file…"
+  fontSize: 17, lineHeight: 1.75, width: 700, paraGap: 0.9,
+  justify: true, bold: false,
 };
 
+// Preset reading themes ({bg,fg}); `default` inherits the app theme, `custom` uses the
+// two color pickers. Trivially extendable — just add a row. Font presets map to local /
+// system font stacks (no web fonts, so nothing to load or maintain); the custom-font box
+// accepts any font installed on the device.
+const THEMES = {
+  default: { bg: null, fg: null },
+  white:   { bg: "#ffffff", fg: "#1a1a1a" },
+  sepia:   { bg: "#f4ecd8", fg: "#5b4636" },
+  cream:   { bg: "#faf3e0", fg: "#46402f" },
+  blue:    { bg: "#dbe6f0", fg: "#1c2a38" },
+  rose:    { bg: "#f7e6ea", fg: "#4a2b30" },
+  mint:    { bg: "#e2efe4", fg: "#22352a" },
+  grey:    { bg: "#2a2c31", fg: "#d4d6da" },
+  black:   { bg: "#000000", fg: "#c8c8c8" },
+};
+const THEME_ORDER = ["default", "white", "sepia", "cream", "blue", "rose", "mint", "grey", "black", "custom"];
+const FONT_STACKS = {
+  "": "",
+  serif: 'Georgia, "Times New Roman", "Songti SC", serif',
+  sans: 'system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif',
+  rounded: '"Nunito", "Varela Round", "Segoe UI", system-ui, sans-serif',
+  reading: '"Lora", "Iowan Old Style", "Palatino Linotype", Georgia, serif',
+  dyslexic: '"OpenDyslexic", "Comic Sans MS", "Segoe Print", "Trebuchet MS", sans-serif',
+};
+// Quick presets shown at the top of the font dropdown (value → label).
+const FONT_PRESETS = [["", "System default"], ["serif", "Serif"], ["sans", "Sans-serif"], ["rounded", "Rounded"], ["reading", "Reading (book)"], ["dyslexic", "Dyslexic-friendly"]];
+// Common fonts most devices have; unavailable ones just fall back. Chosen from a list, not typed.
+const NAMED_FONTS = ["Georgia", "Times New Roman", "Palatino Linotype", "Garamond", "Iowan Old Style", "Charter", "Arial", "Helvetica", "Verdana", "Tahoma", "Trebuchet MS", "Segoe UI", "Calibri", "Courier New", "Comic Sans MS"];
+const DISPLAY_DEFAULTS = { theme: "default", customBg: "#ffffff", customFg: "#111111", fontKey: "", importedFont: null, fontSize: 17, lineHeight: 1.75, width: 700, paraGap: 0.9, justify: true, bold: false };
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
 const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+// Strip symbols/brackets/quotes some voices read aloud, keeping letters, numbers,
+// whitespace and sentence punctuation (for pauses). Applied only to spoken text.
+function stripSymbols(s) {
+  try { return s.replace(/[^\p{L}\p{N}\s.,!?~…。！？、，〜〰～]/gu, " ").replace(/\s{2,}/g, " ").trim(); }
+  catch (_) { return s.replace(/[^0-9A-Za-z\s.,!?~]/g, " ").replace(/\s{2,}/g, " ").trim(); }
+}
+function spokenText(t) { return (R.readSymbols === false ? stripSymbols(t) : t) || t; }
 function setStatus(t) { $("readStatus").textContent = t; }
 function escapeHtml(s) {
   return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -57,6 +104,7 @@ async function openFile(file) {
     $("readService").classList.add("hidden");
     $("readCaptcha").classList.add("hidden");
 
+    R.tocTranslated = false; R.tocTitlesEn = null; updateTocTranslateBtn();
     renderToc();
     $("ttsPlayer").classList.remove("hidden");
     $("readBodyCard").classList.remove("hidden");
@@ -90,10 +138,33 @@ function renderToc() {
     const row = document.createElement("div");
     row.className = "item" + (i === R.chapter ? " current" : "");
     row.dataset.i = i;
-    row.innerHTML = `<span class="ttl">${escapeHtml(ch.title || "Chapter " + (i + 1))}</span>`;
+    const title = (R.tocTranslated && R.tocTitlesEn && R.tocTitlesEn[i]) ? R.tocTitlesEn[i] : (ch.title || "Chapter " + (i + 1));
+    row.innerHTML = `<span class="ttl">${escapeHtml(title)}</span>`;
     row.addEventListener("click", () => { closeDrawer(); loadChapter(i, 0, false); });
     toc.appendChild(row);
   });
+}
+
+// Reflect the toc-translate toggle's label/state on its button.
+function updateTocTranslateBtn() {
+  const btn = $("readTocTranslate");
+  if (!btn) return;
+  btn.classList.toggle("active", !!R.tocTranslated);
+  btn.textContent = R.tocTranslated ? "✓ Translated" : "🌐 Translate";
+}
+// Toggle: translate all Contents titles to English (fetched once, then cached).
+async function translateToc() {
+  if (!R.book || !R.book.chapters.length) return;
+  if (R.tocTitlesEn) { R.tocTranslated = !R.tocTranslated; updateTocTranslateBtn(); renderToc(); return; }
+  const btn = $("readTocTranslate");
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
+  try {
+    R.tocTitlesEn = await translateAll(R.book.chapters.map((c) => c.title || ""), "en", "auto");
+    R.tocTranslated = true;
+  } catch (e) { setStatus("Couldn't translate the titles."); }
+  if (btn) btn.disabled = false;
+  updateTocTranslateBtn();
+  renderToc();
 }
 
 // ---- Contents drawer + immersive chrome ----
@@ -102,6 +173,33 @@ function closeDrawer() { $("readDrawer").classList.remove("open"); $("readBackdr
 function setImmersive(on) {
   R.immersive = on;
   $("modeRead").classList.toggle("immersive", on);
+}
+// Keep the chapter toolbar on screen while reading. position: sticky alone isn't
+// reliable on some Android browsers, so once the bar's normal spot scrolls above the
+// viewport we switch it to position: fixed (aligned to the reading card) and hold its
+// space with a spacer so the text doesn't jump.
+function updateNavPin() {
+  const bar = $("readNavbar"), spacer = $("readNavSpacer"), card = $("readBodyCard");
+  if (!bar || !spacer || !card) return;
+  const unpin = () => {
+    if (!bar.classList.contains("pinned")) return;
+    bar.classList.remove("pinned");
+    bar.style.left = bar.style.width = "";
+    spacer.style.height = "0px";
+  };
+  if ($("modeRead").hidden || card.classList.contains("hidden")) { unpin(); return; }
+  const s = spacer.getBoundingClientRect();
+  const c = card.getBoundingClientRect();
+  const h = bar.offsetHeight;
+  // pin while the bar's home is above the top AND the card still extends below it
+  if (s.top < 0 && c.bottom > h + 8) {
+    if (!bar.classList.contains("pinned")) {
+      spacer.style.height = (h + 6) + "px"; // bar height + its -4px/10px margins
+      bar.classList.add("pinned");
+    }
+    bar.style.left = Math.round(c.left + 1) + "px";
+    bar.style.width = Math.round(c.width - 2) + "px";
+  } else unpin();
 }
 // Programmatic scroll (e.g. TTS follow) shouldn't toggle the chrome.
 function markProgScroll() { R.progScroll = Date.now(); }
@@ -115,10 +213,8 @@ function onReaderScroll() {
 }
 
 // ---- render a chapter + build speakable segments ----
-function splitSentences(t) {
-  const parts = t.match(/[^.!?。！？…]+[.!?。！？…]*\s*/g);
-  return parts ? parts.map((s) => s.trim()).filter(Boolean) : (t ? [t.trim()] : []);
-}
+// One segment per PARAGRAPH (block) — TTS reads a whole paragraph as a unit and
+// highlights it as a unit; the pause falls only at paragraph breaks.
 function buildSegments(root) {
   const segs = [];
   root.querySelectorAll("p, h1, h2, h3, h4, li, blockquote").forEach((block) => {
@@ -126,14 +222,12 @@ function buildSegments(root) {
     const text = block.textContent.replace(/\s+/g, " ").trim();
     if (!text) return;
     block.textContent = "";
-    splitSentences(text).forEach((sent) => {
-      const span = document.createElement("span");
-      span.className = "seg";
-      span.dataset.seg = String(segs.length);
-      span.textContent = sent + " ";
-      block.appendChild(span);
-      segs.push(span);
-    });
+    const span = document.createElement("span");
+    span.className = "seg";
+    span.dataset.seg = String(segs.length);
+    span.textContent = text;
+    block.appendChild(span);
+    segs.push(span);
   });
   return segs;
 }
@@ -184,6 +278,15 @@ async function renderLoaded(i, seg, speak) {
     if (url) img.src = url; else img.removeAttribute("src");
     img.removeAttribute("srcset");
   });
+  // Prepend the chapter title so TTS always reads it first (skip if the body already
+  // opens with it, to avoid saying the title twice).
+  const titleText = (ch.title || "").replace(/\s+/g, " ").trim();
+  if (titleText) {
+    const fb = wrap.querySelector("p, h1, h2, h3, h4, h5, h6, li, blockquote");
+    const fbText = fb ? (fb.textContent || "").replace(/\s+/g, " ").trim() : "";
+    const dup = fbText && (fbText === titleText || fbText.startsWith(titleText) || titleText.startsWith(fbText));
+    if (!dup) { const h = document.createElement("h2"); h.className = "chap-title"; h.textContent = titleText; wrap.insertBefore(h, wrap.firstChild); }
+  }
   R.segEls = buildSegments(wrap);
   R.chunks = []; // rebuilt lazily by speakFrom for this chapter
   $("readChapTitle").textContent = ch.title || ("Chapter " + (i + 1));
@@ -206,93 +309,107 @@ function highlight(i, scroll) {
 }
 
 // ---- text-to-speech ----
-// Continuous playback like wtr-lab's reader: speak a whole paragraph (capped in
-// length) as ONE utterance, so there are no per-sentence utterance boundaries for
-// the engine to pause at. The per-sentence highlight is driven by `onboundary`
-// (word position) events; only ~2 chunks are queued ahead for smooth transitions.
-const MAX_CHUNK = 500;         // chars: split long paragraphs to dodge the engine's long-utterance cutoff
-const TTS_AHEAD_CHUNKS = 2;
+// Read-aloud pacing: speak ONE paragraph per utterance and leave a short,
+// natural, adjustable pause between paragraphs (R.sentPause ms). A long paragraph is
+// hard-split into pieces (same segIndex) spoken back-to-back so only real paragraph
+// breaks get a pause. (Kept identical in webwidget.js.)
+const MAX_CHUNK = 500;          // chars: hard-split an over-long paragraph
+// The gap between paragraphs is R.sentPause (ms), adjustable from the player.
 
-// Group the chapter's sentence segments into speakable chunks (one per paragraph,
-// split when a paragraph exceeds MAX_CHUNK). Each chunk maps char offsets → segIndex.
+// One chunk per paragraph segment; an over-long paragraph becomes several chunks that
+// share its `gi` (segIndex) so the pause fires only when `gi` actually changes.
 function buildChunks() {
   R.chunks = [];
-  let cur = null, curBlock = null;
   R.segEls.forEach((el, gi) => {
-    const block = el.parentElement;
-    if (!cur || block !== curBlock || cur.text.length >= MAX_CHUNK) {
-      cur = { text: "", parts: [] }; R.chunks.push(cur); curBlock = block;
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) return;
+    if (text.length <= MAX_CHUNK) { R.chunks.push({ gi, text }); return; }
+    let s = text;
+    while (s.length > MAX_CHUNK) {
+      let cut = s.lastIndexOf(" ", MAX_CHUNK); if (cut <= 0) cut = MAX_CHUNK;
+      R.chunks.push({ gi, text: s.slice(0, cut).trim() });
+      s = s.slice(cut).trim();
     }
-    cur.parts.push({ gi, start: cur.text.length });
-    cur.text += (el.textContent || "");
+    if (s) R.chunks.push({ gi, text: s });
   });
 }
-function segLocation(i) {
-  for (let c = 0; c < R.chunks.length; c++) {
-    const parts = R.chunks[c].parts;
-    for (let p = 0; p < parts.length; p++) if (parts[p].gi === i) return { c, start: parts[p].start };
-  }
-  return { c: 0, start: 0 };
+function chunkForSeg(i) {
+  for (let c = 0; c < R.chunks.length; c++) if (R.chunks[c].gi >= i) return c;
+  return 0;
+}
+// End of a chapter's TTS: auto-advance to the next chapter when enabled, else stop.
+function advanceChapterOrStop() {
+  const more = R.chapter < R.book.chapters.length - 1;
+  if (R.autoNext !== false && more) loadChapter(R.chapter + 1, 0, true);
+  else { stopTts(); setStatus(more ? "Finished the chapter." : "Finished the book."); }
+}
+// Pause (ms) inserted only at a paragraph boundary; 0 within one long paragraph's pieces.
+function gapBetween(a, b) {
+  return R.chunks[b].gi !== R.chunks[a].gi ? (R.sentPause || 0) : 0;
 }
 function speakFrom(i) {
   synth.cancel();
+  if (R.pauseTimer) { clearTimeout(R.pauseTimer); R.pauseTimer = null; }
   R.utters = [];
-  if (i >= R.segEls.length) { // end of chapter → next chapter, or finish
-    if (R.chapter < R.book.chapters.length - 1) loadChapter(R.chapter + 1, 0, true);
-    else { stopTts(); setStatus("Finished the book."); }
-    return;
-  }
+  if (i >= R.segEls.length) { advanceChapterOrStop(); return; } // end of chapter
   if (i < 0) i = 0;
   if (!R.chunks.length) buildChunks();
   R.segIndex = i; R.speaking = true; R.paused = false;
-  const loc = segLocation(i);
+  R.spokenUpto = -1;
   const t = ++R.token;
   highlight(i); saveProgressSoon();
-  R.chunkQueue = loc.c;
-  for (let n = 0; n < TTS_AHEAD_CHUNKS && R.chunkQueue < R.chunks.length; n++, R.chunkQueue++) {
-    enqueueChunk(R.chunkQueue, R.chunkQueue === loc.c ? loc.start : 0, t);
-  }
+  playChunk(chunkForSeg(i), t);
   updatePlayBtn();
 }
-function enqueueChunk(c, startChar, t) {
+// Speak one chunk. To hide the voice's start-up latency (remote voices such as
+// "Google US English" buffer before each utterance, which was heard as a silent gap
+// at every paragraph even with the gap set to 0), we PIPELINE: while a chunk plays we
+// queue the next one whenever the gap to it is 0, so the engine pre-buffers it and
+// playback is gapless. A real paragraph gap (R.sentPause > 0) is honoured with a timer.
+function playChunk(c, t) {
+  if (t !== R.token || c >= R.chunks.length || c <= R.spokenUpto) return; // guard double-speak
+  R.spokenUpto = c;
   const chunk = R.chunks[c];
-  const text = chunk.text.slice(startChar).replace(/\s+/g, " ").trim();
-  const parts = chunk.parts.filter((p) => p.start >= startChar).map((p) => ({ gi: p.gi, off: p.start - startChar }));
-  if (!text) return; // nothing to say in this slice
-  const u = new SpeechSynthesisUtterance(text);
+  if (!chunk || !chunk.text) return;
+  const u = new SpeechSynthesisUtterance(spokenText(chunk.text));
   u.rate = R.rate;
   if (R.voice) { u.voice = R.voice; u.lang = R.voice.lang; }
-  let pIdx = 0;
-  const setSeg = (gi) => { if (gi != null && gi !== R.segIndex) { R.segIndex = gi; highlight(gi); saveProgressSoon(); } };
-  u.onstart = () => { if (t !== R.token) return; if (parts.length) setSeg(parts[0].gi); };
-  u.onboundary = (e) => { // move the highlight to the sentence containing the spoken word
+  u.onstart = () => {
     if (t !== R.token) return;
-    while (pIdx + 1 < parts.length && parts[pIdx + 1].off <= e.charIndex) pIdx++;
-    if (parts[pIdx]) setSeg(parts[pIdx].gi);
+    if (chunk.gi !== R.segIndex) { R.segIndex = chunk.gi; highlight(chunk.gi); saveProgressSoon(); }
+    const nx = c + 1;
+    if (nx < R.chunks.length && gapBetween(c, nx) === 0) playChunk(nx, t); // pre-buffer next → gapless
   };
   u.onend = () => {
     if (t !== R.token || R.paused) return;
-    if (R.chunkQueue < R.chunks.length) { enqueueChunk(R.chunkQueue, 0, t); R.chunkQueue++; }
-    else if (c === R.chunks.length - 1) { // finished the last chunk → advance chapter
-      if (R.chapter < R.book.chapters.length - 1) loadChapter(R.chapter + 1, 0, true);
-      else { stopTts(); setStatus("Finished the book."); }
-    }
+    const nx = c + 1;
+    if (nx >= R.chunks.length) { if (c === R.chunks.length - 1) advanceChapterOrStop(); return; }
+    const gap = gapBetween(c, nx);
+    if (gap > 0) R.pauseTimer = setTimeout(() => { R.pauseTimer = null; if (t === R.token && !R.paused) playChunk(nx, t); }, gap);
+    // gap === 0 → the next chunk was already pipelined in onstart; nothing to do here.
   };
-  u.onerror = () => { if (t !== R.token) return; if (R.chunkQueue < R.chunks.length) { enqueueChunk(R.chunkQueue, 0, t); R.chunkQueue++; } };
+  u.onerror = () => { if (t !== R.token) return; const nx = c + 1; if (nx < R.chunks.length) playChunk(nx, t); };
   R.utters.push(u); // hold refs so utterances aren't garbage-collected mid-speech
   synth.speak(u);
 }
 function togglePlay() {
   if (!R.book) return;
   if (!R.speaking) { speakFrom(R.segIndex || 0); return; }
-  if (R.paused) { synth.resume(); R.paused = false; }
-  else { synth.pause(); R.paused = true; }
+  if (R.paused) {
+    R.paused = false;
+    if (synth.paused) synth.resume();
+    else if (!synth.speaking) speakFrom(R.segIndex); // resumed during an inter-paragraph gap
+  } else {
+    R.paused = true;
+    synth.pause();
+  }
   updatePlayBtn();
 }
 function stopTts() {
   R.token++;
   R.speaking = false; R.paused = false;
-  R.utters = []; R.chunkQueue = 0;
+  R.utters = []; R.chunkQueue = 0; R.spokenUpto = -1;
+  if (R.pauseTimer) { clearTimeout(R.pauseTimer); R.pauseTimer = null; }
   try { synth.cancel(); } catch (_) {}
   updatePlayBtn();
 }
@@ -384,10 +501,125 @@ function saveProgress() {
   } catch (_) { /* ignore */ }
 }
 
+// ---- reader Display (font / size / line-height / theme) ----
+function setVar(name, val) {
+  const el = $("modeRead"); if (!el) return;
+  if (val === "" || val == null) el.style.removeProperty(name);
+  else el.style.setProperty(name, val);
+}
+// Resolve a font-dropdown choice to a CSS font-family value. Choices are: "" (system),
+// a FONT_STACKS preset key, "named:<Family>" for a common font, or "imported" for a font
+// the user imported from a file.
+function fontCssFor(choice) {
+  if (!choice) return "";
+  if (FONT_STACKS[choice] != null) return FONT_STACKS[choice];
+  if (choice === "imported") return (R.importedFont && R.importedFont.name) ? `"${R.importedFont.name}", serif` : "";
+  if (choice.indexOf("named:") === 0) return `"${choice.slice(6)}", system-ui, sans-serif`;
+  return "";
+}
+// (Re)build the font <select> from presets + common fonts + any imported font.
+function buildFontSelect() {
+  const sel = $("readFontSelect"); if (!sel) return;
+  sel.innerHTML = "";
+  const optGroup = (label) => { const g = document.createElement("optgroup"); g.label = label; sel.appendChild(g); return g; };
+  const add = (parent, value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; parent.appendChild(o); };
+  const g1 = optGroup("Presets");
+  FONT_PRESETS.forEach(([v, l]) => add(g1, v, l));
+  const g2 = optGroup("Installed fonts");
+  NAMED_FONTS.forEach((n) => add(g2, "named:" + n, n));
+  if (R.importedFont && R.importedFont.name) {
+    const g3 = optGroup("Imported");
+    add(g3, "imported", R.importedFont.name + " (imported)");
+  }
+  sel.value = R.fontKey || "";
+}
+// Register an imported font with the document so it can be used by name. dataUrl persists
+// in readerPrefs, so we re-register on load.
+async function registerImportedFont(name, dataUrl) {
+  try {
+    if (!name || !dataUrl || typeof FontFace === "undefined") return false;
+    const ff = new FontFace(name, `url(${dataUrl})`);
+    await ff.load();
+    document.fonts.add(ff);
+    return true;
+  } catch (e) { console.warn("font import/register failed", e); return false; }
+}
+// Import a local font file (.ttf/.otf/.woff/.woff2): register it and remember it.
+function importFontFile(file) {
+  if (!file) return;
+  const name = (file.name || "Imported font").replace(/\.[^.]+$/, "").replace(/[^\w \-]/g, "").trim() || "Imported font";
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const dataUrl = reader.result;
+    const ok = await registerImportedFont(name, dataUrl);
+    if (!ok) { setStatus("Couldn't load that font file."); return; }
+    R.importedFont = { name, dataUrl };
+    R.fontKey = "imported";
+    buildFontSelect();
+    applyDisplay();
+    saveReaderPrefs();
+    setStatus(`Font “${name}” imported.`);
+  };
+  reader.onerror = () => setStatus("Couldn't read that font file.");
+  reader.readAsDataURL(file);
+}
+
+// Push the current display prefs onto #modeRead as CSS variables (see popup.css).
+function applyDisplay() {
+  const root = $("modeRead"); if (!root) return;
+  let bg = null, fg = null;
+  if (R.theme === "custom") { bg = R.customBg; fg = R.customFg; }
+  else { const t = THEMES[R.theme]; if (t && t.bg) { bg = t.bg; fg = t.fg; } }
+  root.classList.toggle("reader-themed", !!bg);
+  setVar("--reader-bg", bg || "");
+  setVar("--reader-fg", fg || "");
+  setVar("--reader-font", fontCssFor(R.fontKey) || "");
+  setVar("--reader-size", (R.fontSize || 17) + "px");
+  setVar("--reader-lh", String(R.lineHeight || 1.75));
+  setVar("--reader-width", (R.width || 700) + "px");
+  setVar("--reader-align", R.justify ? "justify" : "left");
+  setVar("--reader-para-gap", (R.paraGap || 0.9) + "em");
+  setVar("--reader-weight", R.bold ? "600" : "400");
+  syncDisplayUI();
+}
+// Reflect state onto the panel's controls (active buttons, value labels, pickers).
+function syncDisplayUI() {
+  document.querySelectorAll("#readThemeRow .rd-swatch").forEach((b) => b.classList.toggle("active", b.dataset.theme === R.theme));
+  const cc = $("readCustomColors"); if (cc) cc.classList.toggle("hidden", R.theme !== "custom");
+  if ($("readBgColor")) $("readBgColor").value = R.customBg;
+  if ($("readFgColor")) $("readFgColor").value = R.customFg;
+  if ($("readFontSelect")) $("readFontSelect").value = R.fontKey || "";
+  if ($("readSizeVal")) $("readSizeVal").textContent = String(R.fontSize);
+  if ($("readLhVal")) $("readLhVal").textContent = Number(R.lineHeight).toFixed(2);
+  if ($("readWidthVal")) $("readWidthVal").textContent = String(R.width);
+  if ($("readGapVal")) $("readGapVal").textContent = Number(R.paraGap).toFixed(2);
+  if ($("readJustify")) $("readJustify").checked = R.justify;
+  if ($("readBold")) $("readBold").checked = R.bold;
+}
+function renderThemeSwatches() {
+  const row = $("readThemeRow"); if (!row) return;
+  row.innerHTML = "";
+  THEME_ORDER.forEach((id) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "rd-swatch"; b.dataset.theme = id; b.textContent = "Aa";
+    if (id === "custom") { b.textContent = "＋"; b.title = "Custom colors"; b.style.background = R.customBg; b.style.color = R.customFg; }
+    else if (id === "default") { b.title = "Default (follows the app theme)"; b.style.background = "var(--card-2)"; b.style.color = "var(--fg)"; }
+    else { const t = THEMES[id]; b.title = id.charAt(0).toUpperCase() + id.slice(1); b.style.background = t.bg; b.style.color = t.fg; }
+    b.addEventListener("click", () => { R.theme = id; applyDisplay(); saveReaderPrefs(); });
+    row.appendChild(b);
+  });
+}
+function openDisplay() { $("readDisplayPanel").classList.add("open"); $("readDisplayBackdrop").classList.add("open"); }
+function closeDisplay() { $("readDisplayPanel").classList.remove("open"); $("readDisplayBackdrop").classList.remove("open"); }
+
 // ---- reader UI prefs (player position, toggles, voice, rate) ----
 function saveReaderPrefs() {
   if (!store) return;
-  try { store.set({ readerPrefs: { follow: R.follow, hl: R.hl, rate: R.rate, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed, tocReversed: R.tocReversed } }); } catch (_) {}
+  try { store.set({ readerPrefs: {
+    follow: R.follow, hl: R.hl, readSymbols: R.readSymbols, autoNext: R.autoNext, rate: R.rate, sentPause: R.sentPause, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed, tocReversed: R.tocReversed,
+    theme: R.theme, customBg: R.customBg, customFg: R.customFg, fontKey: R.fontKey, importedFont: R.importedFont,
+    fontSize: R.fontSize, lineHeight: R.lineHeight, width: R.width, paraGap: R.paraGap, justify: R.justify, bold: R.bold,
+  } }); } catch (_) {}
 }
 function applyPlayerPos() {
   const pl = $("ttsPlayer");
@@ -443,6 +675,7 @@ export function openLive({ meta, chapters, bookKey, provider, startIndex }) {
   $("readCover").classList.add("hidden");
   $("readResume").classList.add("hidden");
 
+  R.tocTranslated = false; R.tocTitlesEn = null; updateTocTranslateBtn();
   renderToc();
   $("ttsPlayer").classList.remove("hidden");
   $("readBodyCard").classList.remove("hidden");
@@ -450,7 +683,18 @@ export function openLive({ meta, chapters, bookKey, provider, startIndex }) {
 
   const start = (typeof startIndex === "number" && startIndex >= 0 && startIndex < chapters.length) ? startIndex : 0;
   setStatus(`${chapters.length} chapters — reading from chapter ${start + 1}.`);
-  loadChapter(start, 0, false);
+  // Offer to resume where you left off (same as file mode). Saved progress that's
+  // further along than the opened chapter shows a Continue banner; otherwise start here.
+  getProgress(R.bookKey).then((prog) => {
+    if (prog && (prog.chapterIndex > start || (prog.chapterIndex === start && prog.segIndex > 0))) {
+      $("readResumeMsg").textContent = `Resume: ${prog.title || "Chapter " + (prog.chapterIndex + 1)} · line ${prog.segIndex + 1}`;
+      $("readResume").classList.remove("hidden");
+      $("readResumeBtn").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(prog.chapterIndex, prog.segIndex, false); };
+      $("readResumeStart").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(start, 0, false); };
+    } else {
+      loadChapter(start, 0, false);
+    }
+  }).catch(() => loadChapter(start, 0, false));
 }
 
 // Re-fetch the current (and future) chapters — used when the translation service
@@ -466,7 +710,7 @@ export function readerReload() {
 }
 
 // Called by popup.js when the user leaves Read mode or closes the page.
-export function readerStop() { stopTts(); saveProgress(); closeDrawer(); setImmersive(false); }
+export function readerStop() { stopTts(); saveProgress(); closeDrawer(); closeDisplay(); setImmersive(false); }
 
 export function initRead() {
   $("readOpen").addEventListener("click", () => $("readFile").click());
@@ -477,10 +721,19 @@ export function initRead() {
   $("ttsPrev").addEventListener("click", () => stepLine(-1));
   $("ttsNext").addEventListener("click", () => stepLine(1));
   $("ttsVoice").addEventListener("change", (e) => { R.voice = R.voices[+e.target.value] || null; R.userVoice = R.voice && R.voice.name; saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); });
-  $("ttsRate").addEventListener("input", (e) => { R.rate = +e.target.value; $("ttsRateVal").textContent = R.rate.toFixed(1) + "×"; });
-  $("ttsRate").addEventListener("change", () => { saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); }); // apply new rate from the current line
+  const applyRate = () => { let r = parseFloat($("ttsRate").value); if (!isFinite(r)) r = 1; if (r < 0.5) r = 0.5; if (r > 2) r = 2; R.rate = r; };
+  $("ttsRate").addEventListener("input", applyRate);
+  $("ttsRate").addEventListener("change", () => { applyRate(); $("ttsRate").value = R.rate.toFixed(1); saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); }); // apply new rate from the current line
+  if ($("ttsPause")) {
+    // Number box in SECONDS; stored internally as ms. Takes effect at the next gap.
+    const applyPause = () => { let s = parseFloat($("ttsPause").value); if (!isFinite(s) || s < 0) s = 0; if (s > 5) s = 5; R.sentPause = Math.round(s * 1000); };
+    $("ttsPause").addEventListener("input", applyPause);
+    $("ttsPause").addEventListener("change", () => { applyPause(); $("ttsPause").value = (R.sentPause / 1000).toFixed(2); saveReaderPrefs(); });
+  }
   $("ttsFollow").addEventListener("change", (e) => { R.follow = e.target.checked; saveReaderPrefs(); if (R.follow) highlight(R.segIndex); });
   $("ttsHighlight").addEventListener("change", (e) => { R.hl = e.target.checked; highlight(R.segIndex, false); saveReaderPrefs(); });
+  if ($("ttsSymbols")) $("ttsSymbols").addEventListener("change", (e) => { R.readSymbols = e.target.checked; saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); });
+  if ($("ttsAutoNext")) $("ttsAutoNext").addEventListener("change", (e) => { R.autoNext = e.target.checked; saveReaderPrefs(); });
   $("ttsCollapse").addEventListener("click", () => { R.collapsed = !R.collapsed; $("ttsPlayer").classList.toggle("collapsed", R.collapsed); $("ttsCollapse").textContent = R.collapsed ? "▸" : "▾"; saveReaderPrefs(); });
   initDrag();
 
@@ -490,12 +743,34 @@ export function initRead() {
       const p = o && o.readerPrefs; if (!p) return;
       if (typeof p.follow === "boolean") { R.follow = p.follow; $("ttsFollow").checked = p.follow; }
       if (typeof p.hl === "boolean") { R.hl = p.hl; $("ttsHighlight").checked = p.hl; }
-      if (typeof p.rate === "number") { R.rate = p.rate; $("ttsRate").value = String(p.rate); $("ttsRateVal").textContent = p.rate.toFixed(1) + "×"; }
+      if (typeof p.readSymbols === "boolean" && $("ttsSymbols")) { R.readSymbols = p.readSymbols; $("ttsSymbols").checked = p.readSymbols; }
+      if (typeof p.autoNext === "boolean" && $("ttsAutoNext")) { R.autoNext = p.autoNext; $("ttsAutoNext").checked = p.autoNext; }
+      if (typeof p.rate === "number") { R.rate = p.rate; $("ttsRate").value = p.rate.toFixed(1); }
+      if (typeof p.sentPause === "number" && $("ttsPause")) { R.sentPause = p.sentPause; $("ttsPause").value = (p.sentPause / 1000).toFixed(2); }
       if (p.voiceName) R.userVoice = p.voiceName;
       if (p.pos) R.pos = p.pos;
       R.collapsed = !!p.collapsed;
       R.tocReversed = !!p.tocReversed;
+      // display prefs
+      const num = (v, d) => (typeof v === "number" && isFinite(v)) ? v : d;
+      if (typeof p.theme === "string") R.theme = p.theme;
+      if (typeof p.customBg === "string") R.customBg = p.customBg;
+      if (typeof p.customFg === "string") R.customFg = p.customFg;
+      if (typeof p.fontKey === "string") R.fontKey = p.fontKey;
+      if (p.importedFont && p.importedFont.name && p.importedFont.dataUrl) {
+        R.importedFont = p.importedFont;
+        registerImportedFont(p.importedFont.name, p.importedFont.dataUrl).then(() => { buildFontSelect(); applyDisplay(); });
+      }
+      R.fontSize = num(p.fontSize, R.fontSize);
+      R.lineHeight = num(p.lineHeight, R.lineHeight);
+      R.width = num(p.width, R.width);
+      R.paraGap = num(p.paraGap, R.paraGap);
+      if (typeof p.justify === "boolean") R.justify = p.justify;
+      if (typeof p.bold === "boolean") R.bold = p.bold;
       applyPlayerPos();
+      renderThemeSwatches();
+      buildFontSelect();
+      applyDisplay();
     });
   } catch (_) {}
 
@@ -507,6 +782,33 @@ export function initRead() {
   $("readDrawerClose").addEventListener("click", closeDrawer);
   $("readBackdrop").addEventListener("click", closeDrawer);
   $("readTocReverse").addEventListener("click", () => { R.tocReversed = !R.tocReversed; renderToc(); saveReaderPrefs(); });
+  if ($("readTocTranslate")) $("readTocTranslate").addEventListener("click", translateToc);
+
+  // Display panel (font / size / line-height / reading theme) — all local, saved prefs.
+  renderThemeSwatches();
+  if ($("readDisplayBtn")) $("readDisplayBtn").addEventListener("click", () => { $("readDisplayPanel").classList.contains("open") ? closeDisplay() : openDisplay(); });
+  if ($("readDisplayClose")) $("readDisplayClose").addEventListener("click", closeDisplay);
+  if ($("readDisplayBackdrop")) $("readDisplayBackdrop").addEventListener("click", closeDisplay);
+  buildFontSelect();
+  if ($("readFontSelect")) $("readFontSelect").addEventListener("change", (e) => { R.fontKey = e.target.value; applyDisplay(); saveReaderPrefs(); });
+  if ($("readFontImport")) $("readFontImport").addEventListener("click", () => { const f = $("readFontFile"); if (f) f.click(); });
+  if ($("readFontFile")) $("readFontFile").addEventListener("change", (e) => { const f = e.target.files && e.target.files[0]; importFontFile(f); e.target.value = ""; });
+  if ($("readBgColor")) $("readBgColor").addEventListener("input", (e) => { R.customBg = e.target.value; R.theme = "custom"; applyDisplay(); saveReaderPrefs(); });
+  if ($("readFgColor")) $("readFgColor").addEventListener("input", (e) => { R.customFg = e.target.value; R.theme = "custom"; applyDisplay(); saveReaderPrefs(); });
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const step = (field, delta, lo, hi, round) => { R[field] = clamp(round(R[field] + delta), lo, hi); applyDisplay(); saveReaderPrefs(); };
+  if ($("readSizeMinus")) $("readSizeMinus").addEventListener("click", () => step("fontSize", -1, 12, 32, Math.round));
+  if ($("readSizePlus")) $("readSizePlus").addEventListener("click", () => step("fontSize", 1, 12, 32, Math.round));
+  if ($("readLhMinus")) $("readLhMinus").addEventListener("click", () => step("lineHeight", -0.05, 1.2, 2.6, r2));
+  if ($("readLhPlus")) $("readLhPlus").addEventListener("click", () => step("lineHeight", 0.05, 1.2, 2.6, r2));
+  if ($("readWidthMinus")) $("readWidthMinus").addEventListener("click", () => step("width", -40, 480, 1200, Math.round));
+  if ($("readWidthPlus")) $("readWidthPlus").addEventListener("click", () => step("width", 40, 480, 1200, Math.round));
+  if ($("readGapMinus")) $("readGapMinus").addEventListener("click", () => step("paraGap", -0.1, 0, 2.5, r2));
+  if ($("readGapPlus")) $("readGapPlus").addEventListener("click", () => step("paraGap", 0.1, 0, 2.5, r2));
+  if ($("readJustify")) $("readJustify").addEventListener("change", (e) => { R.justify = e.target.checked; applyDisplay(); saveReaderPrefs(); });
+  if ($("readBold")) $("readBold").addEventListener("change", (e) => { R.bold = e.target.checked; applyDisplay(); saveReaderPrefs(); });
+  if ($("readDisplayReset")) $("readDisplayReset").addEventListener("click", () => { Object.assign(R, DISPLAY_DEFAULTS); renderThemeSwatches(); applyDisplay(); saveReaderPrefs(); });
+  applyDisplay();
 
   // Tap the reading area: while immersed → reveal controls (no TTS start);
   // otherwise, tapping a line speaks from there.
@@ -518,7 +820,10 @@ export function initRead() {
   });
 
   // Auto-hide chrome on scroll (down hides, up shows); ignores TTS-follow scrolls.
-  window.addEventListener("scroll", () => { if (!$("modeRead").hidden) onReaderScroll(); }, { passive: true });
+  window.addEventListener("scroll", () => { updateNavPin(); if (!$("modeRead").hidden) onReaderScroll(); }, { passive: true });
+  // Re-dock the floating player when the viewport crosses the mobile/desktop threshold
+  // (rotation, window resize, DevTools device mode) so it never ends up off-screen.
+  window.addEventListener("resize", () => { try { applyPlayerPos(); } catch (_) {} updateNavPin(); });
 
   if (typeof synth !== "undefined" && synth) synth.onvoiceschanged = loadVoices;
 
@@ -527,7 +832,10 @@ export function initRead() {
     if ($("modeRead").hidden) return;
     const tag = (document.activeElement && document.activeElement.tagName) || "";
     if (/INPUT|SELECT|TEXTAREA/.test(tag)) return;
-    if (e.key === "Escape") { if ($("readDrawer").classList.contains("open")) { closeDrawer(); return; } }
+    if (e.key === "Escape") {
+      if ($("readDisplayPanel") && $("readDisplayPanel").classList.contains("open")) { closeDisplay(); return; }
+      if ($("readDrawer").classList.contains("open")) { closeDrawer(); return; }
+    }
     if (e.key === " ") { e.preventDefault(); togglePlay(); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); loadChapter(R.chapter - 1, 0, R.speaking); }
     else if (e.key === "ArrowRight") { e.preventDefault(); loadChapter(R.chapter + 1, 0, R.speaking); }

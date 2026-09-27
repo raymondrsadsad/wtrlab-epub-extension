@@ -11,6 +11,13 @@ Turn a web novel into a clean `.epub`. Full support for **wtr-lab.com** (choose
 4. Click **Load unpacked** and select this folder (`wtrlab-epub-extension`).
 5. Pin it: toolbar puzzle-piece icon → pin **Novel to EPUB**.
 
+## Install (Android — Quetta and similar)
+1. Download `novel-to-epub-<version>.zip` to your phone (don't unzip it).
+2. Open the extensions page, turn on **Developer mode**.
+3. Tap **(from .zip/.crx/.user.js)** and pick the zip.
+4. Open it from the browser menu → Extensions → **Novel to EPUB**. EPUBs save to your
+   Downloads folder. Background "new chapter" alerts may not work on mobile.
+
 ## Use
 1. Open a wtr-lab novel page and click the extension icon — it opens, fills the
    URL, and auto-analyses (works from a chapter page too).

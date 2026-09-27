@@ -167,10 +167,26 @@ function updateInfo() {
   $("mergeQuick").disabled = !inc;
 }
 
-function saveBlob(blob, name, saveAs) {
+// Save a Blob as a file. Uses chrome.downloads where it exists (desktop Chrome/Edge);
+// on Android browsers (Quetta, Kiwi, Lemur…) that API is often missing or fails, so fall
+// back to a plain <a download> click, which hands the file to the browser's own downloader.
+export function saveFile(blob, name, saveAs) {
   const url = URL.createObjectURL(blob);
-  chrome.downloads.download({ url, filename: name, saveAs }, () => setTimeout(() => URL.revokeObjectURL(url), 60000));
+  const cleanup = () => setTimeout(() => URL.revokeObjectURL(url), 60000);
+  const anchorSave = () => {
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.rel = "noopener"; a.style.display = "none";
+    document.body.appendChild(a); a.click(); a.remove();
+    cleanup();
+  };
+  if (!chrome.downloads || typeof chrome.downloads.download !== "function") { anchorSave(); return; }
+  try {
+    chrome.downloads.download({ url, filename: name, saveAs: !!saveAs }, (id) => {
+      if (chrome.runtime.lastError || id === undefined) anchorSave(); else cleanup();
+    });
+  } catch (_) { anchorSave(); }
 }
+function saveBlob(blob, name, saveAs) { saveFile(blob, name, saveAs); }
 
 function exportMerged(saveAs) {
   const included = M.entries.filter((e) => e.include);

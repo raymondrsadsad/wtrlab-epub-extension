@@ -1,9 +1,9 @@
 import { pickAdapter, adapterById } from "./adapters/registry.js";
 import { buildEpub } from "./epub.js";
 import { parseEpub } from "./epubread.js";
-import { initMerge } from "./mergeview.js";
+import { initMerge, saveFile } from "./mergeview.js";
 import { initRead, readerStop, openLive, readerReload } from "./readerview.js";
-import { translateAll } from "./adapters/translate.js";
+import { translateAll, setGlossary } from "./adapters/translate.js";
 
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -69,12 +69,16 @@ function savePrefs() {
 }
 
 // Canonical novel URL for de-duping the recent list: drop ?query (…?tab=toc,
-// ?service=…) and #hash, and collapse a wtr-lab chapter URL to its novel page.
+// ?service=…) and #hash, and collapse a chapter/episode URL to its novel page
+// (wtr-lab /chapter-N and kakuyomu /works/<id>/episodes/<id>).
 function canonUrl(u) {
   try {
     const url = new URL(u);
     url.hash = ""; url.search = "";
-    url.pathname = url.pathname.replace(/\/chapter-\d+\/?$/i, "").replace(/\/+$/, "") || "/";
+    url.pathname = url.pathname
+      .replace(/\/chapter-\d+\/?$/i, "")
+      .replace(/\/episodes\/\d+\/?$/i, "")
+      .replace(/\/+$/, "") || "/";
     return url.toString();
   } catch (e) { return String(u || "").split(/[?#]/)[0].replace(/\/+$/, ""); }
 }
@@ -90,18 +94,21 @@ function dedupeRecent(list) {
   return out;
 }
 
-// Recent novels list (newest first, capped).
-function addRecent(url, title) {
+// Recent novels list (newest first, capped). Also feeds the Library shelf, so it keeps
+// cover + author and holds more entries; the dropdown still shows just the newest few.
+function addRecent(url, title, cover, author) {
   if (!store || !url) return;
   const cu = canonUrl(url);
   try {
     store.get("recent", (o) => {
       let list = (o && Array.isArray(o.recent)) ? o.recent : [];
+      const prev = list.find((r) => r && canonUrl(r.url) === cu);
       list = list.filter((r) => r && canonUrl(r.url) !== cu);
-      list.unshift({ url: cu, title: title || cu, ts: Date.now() });
-      list = dedupeRecent(list).slice(0, 8);
+      list.unshift({ url: cu, title: title || (prev && prev.title) || cu, cover: cover || (prev && prev.cover) || "", author: author || (prev && prev.author) || "", ts: Date.now() });
+      list = dedupeRecent(list).slice(0, 50);
       store.set({ recent: list });
       renderRecent(list);
+      if (currentMode === "library") renderLibrary();
     });
   } catch (e) { /* ignore */ }
 }
@@ -115,6 +122,7 @@ function removeRecent(url) {
       list = list.filter((r) => r && canonUrl(r.url) !== cu);
       store.set({ recent: list });
       renderRecent(list);
+      if (currentMode === "library") renderLibrary();
     });
   } catch (e) { /* ignore */ }
 }
@@ -130,7 +138,7 @@ function renderRecent(list) {
   const wrap = $("recentList");
   if (!wrap) return;
   wrap.innerHTML = "";
-  (list || []).forEach((r) => {
+  (list || []).slice(0, 8).forEach((r) => {
     const item = document.createElement("div");
     item.className = "recent-item";
     const open = document.createElement("button");
@@ -179,6 +187,148 @@ function saveResume() {
 }
 function clearResume() { try { store && store.remove("resume"); } catch (e) {} }
 
+// ---------- glossary (term-lock) ----------
+// { "*": [{from,to}], "<canonUrl>": [{from,to}] } — global terms + per-novel terms,
+// applied after translation via setGlossary(). Purely local, no maintenance.
+let curGlossaries = {};
+function loadGlossaries(cb) {
+  if (!store) { cb && cb(); return; }
+  try { store.get("glossaries", (o) => { curGlossaries = (o && o.glossaries) || {}; cb && cb(); }); }
+  catch (e) { cb && cb(); }
+}
+function mergedGlossary(url) {
+  const g = curGlossaries || {};
+  const global = Array.isArray(g["*"]) ? g["*"] : [];
+  const novel = url ? (Array.isArray(g[canonUrl(url)]) ? g[canonUrl(url)] : []) : [];
+  return global.concat(novel);
+}
+function glossaryScopeKey() {
+  const scope = $("glossaryScope") ? $("glossaryScope").value : "novel";
+  return scope === "*" ? "*" : canonUrl(S.currentUrl || $("url").value || "");
+}
+function currentGlossaryList() {
+  const k = glossaryScopeKey();
+  return Array.isArray(curGlossaries[k]) ? curGlossaries[k].slice() : [];
+}
+function addGlossaryRow(from, to) {
+  const wrap = $("glossaryRows");
+  if (!wrap) return;
+  const row = document.createElement("div");
+  row.className = "glossary-row";
+  row.innerHTML = `<input class="gl-from" type="text" placeholder="original (e.g. 乾)" /><span class="gl-arrow">→</span><input class="gl-to" type="text" placeholder="replacement (e.g. Qian)" /><button type="button" class="gl-del ghost sm" title="Remove">×</button>`;
+  row.querySelector(".gl-from").value = from || "";
+  row.querySelector(".gl-to").value = to || "";
+  row.querySelector(".gl-del").addEventListener("click", () => row.remove());
+  wrap.appendChild(row);
+}
+function renderGlossaryRows(list) {
+  const wrap = $("glossaryRows");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  (list && list.length ? list : [{ from: "", to: "" }]).forEach((p) => addGlossaryRow(p.from, p.to));
+}
+function saveGlossary() {
+  if (!store) return;
+  const rows = Array.from(document.querySelectorAll("#glossaryRows .glossary-row"));
+  const list = rows.map((r) => ({ from: r.querySelector(".gl-from").value.trim(), to: r.querySelector(".gl-to").value }))
+    .filter((p) => p.from);
+  const k = glossaryScopeKey();
+  if (list.length) curGlossaries[k] = list; else delete curGlossaries[k];
+  try { store.set({ glossaries: curGlossaries }); } catch (e) {}
+  setGlossary(mergedGlossary(S.currentUrl));
+  const info = $("glossaryInfo");
+  if (info) { info.textContent = `Saved ${list.length} term${list.length === 1 ? "" : "s"}.`; setTimeout(() => { if (info) info.textContent = ""; }, 2500); }
+}
+
+// ---------- library (shelf) ----------
+// A view over data already stored: `recent` (title/cover/author), `counts` (chapters at
+// last pack), `readProgress` (last-read), and `follows` (auto-update opt-in). No fetching.
+let curFollows = {};
+function loadLibraryData(cb) {
+  if (!store) { cb({ recent: [], counts: {}, readProgress: {}, follows: {} }); return; }
+  try {
+    store.get(["recent", "counts", "readProgress", "follows"], (o) => {
+      curFollows = (o && o.follows) || {};
+      cb({ recent: (o && o.recent) || [], counts: (o && o.counts) || {}, readProgress: (o && o.readProgress) || {}, follows: curFollows });
+    });
+  } catch (e) { cb({ recent: [], counts: {}, readProgress: {}, follows: {} }); }
+}
+function toggleFollow(r) {
+  if (!store) return;
+  const u = canonUrl(r.url);
+  try {
+    store.get(["follows", "counts"], (o) => {
+      const follows = (o && o.follows) || {};
+      const counts = (o && o.counts) || {};
+      if (follows[u]) delete follows[u];
+      else follows[u] = { url: u, title: r.title || u, lastCount: counts[u] || 0, newCount: 0, lastCheck: 0 };
+      curFollows = follows;
+      store.set({ follows });
+      if (currentMode === "library") renderLibrary();
+    });
+  } catch (e) { /* ignore */ }
+}
+// Clear the "N new" badge for a followed novel once you actually open it.
+function resetFollowNew(url) {
+  if (!store || !url) return;
+  const cu = canonUrl(url);
+  try { store.get("follows", (o) => { const f = (o && o.follows) || {}; if (f[cu] && f[cu].newCount) { f[cu].newCount = 0; store.set({ follows: f }); } }); } catch (e) {}
+}
+// After a pack, move a followed novel's baseline up so the count that was just captured
+// isn't re-reported as "new".
+function updateFollowBaseline(url, count) {
+  if (!store || !url) return;
+  const cu = canonUrl(url);
+  try { store.get("follows", (o) => { const f = (o && o.follows) || {}; if (f[cu]) { f[cu].lastCount = count; f[cu].newCount = 0; store.set({ follows: f }); } }); } catch (e) {}
+}
+function renderLibrary() {
+  const wrap = $("libraryList");
+  if (!wrap) return;
+  loadLibraryData(({ recent, counts, readProgress, follows }) => {
+    wrap.innerHTML = "";
+    if (!recent.length) {
+      wrap.innerHTML = `<div class="import-hint"><em>No novels yet — analyse or read one and it'll appear here.</em></div>`;
+      return;
+    }
+    recent.forEach((r) => {
+      const u = canonUrl(r.url);
+      const packed = counts[u];
+      const prog = readProgress["u:" + u];
+      const fol = follows[u];
+      const card = document.createElement("div");
+      card.className = "lib-card";
+      const meta = [];
+      if (r.author) meta.push(escapeHtml(r.author));
+      if (packed != null) meta.push(`packed ${packed} ch`);
+      const cover = r.cover
+        ? `<img class="lib-cover" src="${escapeHtml(r.cover)}" alt="" />`
+        : `<div class="lib-cover lib-cover-empty">📖</div>`;
+      const newBadge = (fol && fol.newCount > 0) ? `<span class="lib-new">+${fol.newCount} new</span>` : "";
+      const progLine = prog ? `<div class="lib-prog">Reading: ${escapeHtml(prog.title || "Chapter " + (prog.chapterIndex + 1))} · line ${prog.segIndex + 1}</div>` : "";
+      card.innerHTML = `
+        ${cover}
+        <div class="lib-info">
+          <div class="lib-title">${escapeHtml(r.title || u)} ${newBadge}</div>
+          <div class="lib-meta">${meta.join(" · ")}</div>
+          ${progLine}
+          <div class="lib-actions">
+            <button class="lib-open ghost sm">📖 Open</button>
+            <button class="lib-read primary sm">🔊 Read</button>
+            <button class="lib-follow ghost sm ${fol ? "on" : ""}">${fol ? "★ Following" : "☆ Follow"}</button>
+            <button class="lib-remove ghost sm" title="Remove from library">✕</button>
+          </div>
+        </div>`;
+      const coverImg = card.querySelector("img.lib-cover");
+      if (coverImg) coverImg.addEventListener("error", () => { coverImg.style.visibility = "hidden"; });
+      card.querySelector(".lib-open").addEventListener("click", () => { $("url").value = u; if ($("adapter")) $("adapter").value = "auto"; setMode("novel"); analyse(); });
+      card.querySelector(".lib-read").addEventListener("click", () => { setMode("web"); if ($("webUrl")) $("webUrl").value = u; openWebReader(u); });
+      card.querySelector(".lib-follow").addEventListener("click", () => toggleFollow(r));
+      card.querySelector(".lib-remove").addEventListener("click", () => removeRecent(u));
+      wrap.appendChild(card);
+    });
+  });
+}
+
 function setStatus(t) { $("status").textContent = t; }
 function setBar(frac) { $("bar").style.width = Math.round(frac * 100) + "%"; }
 
@@ -214,14 +364,18 @@ function applyTheme(theme) {
 // Top-level mode switcher: novel | merge | read.
 let currentMode = "novel";
 function setMode(mode) {
-  if (!["novel", "merge", "read"].includes(mode)) mode = "novel";
+  if (!["novel", "merge", "read", "web", "library"].includes(mode)) mode = "novel";
   if (mode !== "read" && currentMode === "read") { try { readerStop(); } catch (e) {} try { cancelReaderCaptcha(); } catch (e) {} }
   currentMode = mode;
   $("modeNovel").hidden = mode !== "novel";
   $("modeMerge").hidden = mode !== "merge";
   $("modeRead").hidden = mode !== "read";
+  window.dispatchEvent(new Event("scroll")); // re-evaluate the pinned reader toolbar
+  if ($("modeWeb")) $("modeWeb").hidden = mode !== "web";
+  if ($("modeLibrary")) $("modeLibrary").hidden = mode !== "library";
   document.querySelectorAll("#modeTabs .modetab").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
   try { store && store.set({ mode }); } catch (e) {}
+  if (mode === "library") renderLibrary();
 }
 
 // Per-chapter status dot in the list: '', 'loading', 'ok', 'fail', 'imp'
@@ -297,7 +451,11 @@ async function analyse() {
     }
     $("pack").disabled = false;
     $("reverse").classList.remove("hidden");
-    addRecent(url, meta.title);
+    addRecent(url, meta.title, meta.cover, meta.author);
+    // glossary: load + apply for this novel, and reveal the editor
+    if ($("glossaryBox")) $("glossaryBox").classList.remove("hidden");
+    loadGlossaries(() => { setGlossary(mergedGlossary(S.currentUrl)); renderGlossaryRows(currentGlossaryList()); });
+    resetFollowNew(S.currentUrl); // opening it clears its "new chapters" badge
     // new-chapter detection vs. the count at last pack of this novel
     const prev = S.counts[url];
     if (prev != null && S.chapters.length > prev) {
@@ -605,7 +763,7 @@ function fetchChapterWithCaptcha(index) {
     };
     const closeAndReturn = () => {
       if (capTabId != null) { chrome.tabs.remove(capTabId, () => void chrome.runtime.lastError); capTabId = null; }
-      if (toolTabId != null) { chrome.tabs.update(toolTabId, { active: true }, () => void chrome.runtime.lastError); if (toolWinId != null) chrome.windows.update(toolWinId, { focused: true }, () => void chrome.runtime.lastError); }
+      if (toolTabId != null) { chrome.tabs.update(toolTabId, { active: true }, () => void chrome.runtime.lastError); if (toolWinId != null && chrome.windows) chrome.windows.update(toolWinId, { focused: true }, () => void chrome.runtime.lastError); }
     };
     const done = () => { if (timer) clearTimeout(timer); timer = null; hideBar(); if (readerCaptcha && readerCaptcha.p === resolve) readerCaptcha = null; };
     const cancel = () => { cancelled = true; done(); const e = new Error("Loading cancelled."); e.name = "CancelledError"; reject(e); };
@@ -682,9 +840,130 @@ async function readAloud() {
   renderReadService();
   openLive({
     meta, chapters: S.chapters,
-    bookKey: S.currentUrl ? "u:" + S.currentUrl : null,
+    bookKey: S.currentUrl ? "u:" + canonUrl(S.currentUrl) : null,
     provider: getChapterForReader, startIndex,
   });
+}
+
+// Web Reader: open an arbitrary web-novel page in the same live reader, translated.
+// Auto-detects the site (wtr-lab / kakuyomu use their own adapters; anything else
+// falls back to the generic extractor + Google translation). Starts on the page you
+// gave and fetches prev/next chapters on demand — mirrors readAloud() but forces the
+// adapter to auto-detect and the generic service to "Translate → English".
+async function openWebReader(url) {
+  url = (url || $("webUrl").value || "").trim();
+  if (!url) { setWebStatus("Paste a page URL first."); return; }
+  if (!/^https?:\/\//i.test(url)) { setWebStatus("Enter a full http(s) URL."); return; }
+  // Clear any start-position carried over from a previously opened novel — otherwise
+  // opening a different book (e.g. from the Library) would jump to the old chapter number.
+  S.startChapterNo = null; S.startEpisodeId = null; S.startService = null;
+  // wtr-lab: a reader URL (incl. legacy "/old/" and ?service=) must be reduced to the
+  // novel page analyse() needs; remember the chapter + service so we open the right one.
+  let analyseUrl = url;
+  try {
+    if (new URL(url).hostname.endsWith("wtr-lab.com")) {
+      const cm = /\/chapter-(\d+)/i.exec(url); if (cm) S.startChapterNo = +cm[1];
+      const svc = new URL(url).searchParams.get("service"); if (svc) S.startService = svc;
+      analyseUrl = url.replace(/\/(?:old\/)?chapter-\d+\/?(?:[?#].*)?$/i, "");
+    }
+  } catch {}
+  setMode("web");
+  setWebStatus("Loading…");
+  $("url").value = analyseUrl;
+  if ($("adapter")) $("adapter").value = "auto"; // let the registry pick the best adapter
+  await analyse();
+  if (!S.chapters.length) { setWebStatus("Couldn't read that page — no chapters found."); return; }
+  // Generic sites: read them translated by default (its default service is "raw").
+  if (S.adapter && S.adapter.id === "generic") { S.service = "en"; savePrefs(); }
+  // Start on the chapter the URL pointed at: by chapter number first (survives the
+  // "/old/" + ?service= URL variants), then by exact URL / pathname match.
+  let startIndex = -1;
+  if (S.startChapterNo != null) {
+    startIndex = S.chapters.findIndex((c) => c.no === S.startChapterNo);
+    if (startIndex < 0) startIndex = S.chapters.findIndex((c) => { const m = /chapter-(\d+)/i.exec(c.url || ""); return m && +m[1] === S.startChapterNo; });
+  }
+  if (startIndex < 0) startIndex = S.chapters.findIndex((c) => c.url === url);
+  if (startIndex < 0) {
+    try {
+      const p = new URL(url).pathname;
+      startIndex = S.chapters.findIndex((c) => { try { return new URL(c.url).pathname === p; } catch { return false; } });
+    } catch {}
+  }
+  if (startIndex < 0) startIndex = 0;
+  const meta = {
+    title: (S.meta && S.meta.title) || $("title").value.trim() || "Web novel",
+    author: (S.meta && S.meta.author) || $("author").value.trim() || "",
+    language: $("language").value.trim() || "en",
+  };
+  setMode("read");
+  renderReadService();
+  openLive({
+    meta, chapters: S.chapters,
+    bookKey: S.currentUrl ? "u:" + canonUrl(S.currentUrl) : null,
+    provider: getChapterForReader, startIndex,
+  });
+}
+function setWebStatus(t) { const s = $("webStatus"); if (s) s.textContent = t; }
+
+// Read/write the on-site widget's settings (shared with webwidget.js content script).
+function loadWebWidgetPrefs() {
+  if (!store) return;
+  try {
+    store.get("webWidget", (o) => {
+      const cfg = (o && o.webWidget) || {};
+      if ($("webEnabled")) $("webEnabled").checked = !!cfg.enabled;
+      if ($("webAuto")) $("webAuto").checked = !!cfg.autoTranslate;
+      if ($("webLang") && cfg.targetLang) $("webLang").value = cfg.targetLang;
+    });
+  } catch (e) { /* ignore */ }
+}
+function saveWebWidgetPrefs() {
+  if (!store) return;
+  try {
+    store.get("webWidget", (o) => {
+      const cfg = (o && o.webWidget) || {};
+      cfg.enabled = $("webEnabled") ? $("webEnabled").checked : cfg.enabled;
+      cfg.autoTranslate = $("webAuto") ? $("webAuto").checked : cfg.autoTranslate;
+      if ($("webLang")) cfg.targetLang = $("webLang").value;
+      store.set({ webWidget: cfg });
+    });
+  } catch (e) { /* ignore */ }
+}
+
+// ---------- custom translation engine (optional; falls back to Google) ----------
+function txEngineFromFields() {
+  const mode = $("txMode") ? $("txMode").value : "google";
+  return { mode,
+    key: ($("txKey") && $("txKey").value.trim()) || "",
+    endpoint: ($("txEndpoint") && $("txEndpoint").value.trim()) || "",
+    model: ($("txModel") && $("txModel").value.trim()) || "" };
+}
+function updateTxFieldsUI() {
+  const mode = $("txMode") ? $("txMode").value : "google";
+  if ($("txFields")) $("txFields").classList.toggle("hidden", mode === "google");
+  if ($("txModelRow")) $("txModelRow").classList.toggle("hidden", mode !== "openai");
+  if ($("txEndpoint")) $("txEndpoint").placeholder = mode === "deepl" ? "(default: api-free.deepl.com/v2/translate)"
+    : mode === "openai" ? "(default: api.openai.com/v1/chat/completions)" : "";
+}
+function loadTxEngine() {
+  if (!store) return;
+  try {
+    store.get("txEngine", (o) => {
+      const e = (o && o.txEngine) || { mode: "google" };
+      if ($("txMode")) $("txMode").value = e.mode || "google";
+      if ($("txKey")) $("txKey").value = e.key || "";
+      if ($("txEndpoint")) $("txEndpoint").value = e.endpoint || "";
+      if ($("txModel")) $("txModel").value = e.model || "";
+      updateTxFieldsUI();
+    });
+  } catch (e) { /* ignore */ }
+}
+function saveTxEngine() {
+  if (!store) return;
+  const e = txEngineFromFields();
+  try { store.set({ txEngine: e }); } catch (_) {}
+  const info = $("txInfo");
+  if (info) { info.textContent = e.mode === "google" ? "Using Google (free)." : `Saved — using ${e.mode}.`; setTimeout(() => { if (info) info.textContent = ""; }, 2500); }
 }
 
 // ---------- pack ----------
@@ -1056,6 +1335,7 @@ async function finishPack() {
   if (store && S.currentUrl) {
     S.counts[S.currentUrl] = S.chapters.length;
     try { store.set({ counts: S.counts }); } catch (e) {}
+    updateFollowBaseline(S.currentUrl, S.chapters.length);
   }
   const failN = S.failed.size;
   if (failN) {
@@ -1070,10 +1350,7 @@ async function finishPack() {
 
 function doDownload() {
   if (!S.lastBlob) { setStatus("Nothing packed yet — click Pack EPUB first."); return; }
-  const objUrl = URL.createObjectURL(S.lastBlob);
-  chrome.downloads.download({ url: objUrl, filename: S.lastName, saveAs: false }, () => {
-    setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
-  });
+  saveFile(S.lastBlob, S.lastName, false);
   setStatus(`Downloading ${S.lastName}…`);
 }
 
@@ -1175,7 +1452,7 @@ function closeCaptchaTabAndReturn() {
   captchaTabId = null;
   if (wantClose && toolTabId != null) {
     chrome.tabs.update(toolTabId, { active: true }, () => void chrome.runtime.lastError);
-    if (toolWinId != null) chrome.windows.update(toolWinId, { focused: true }, () => void chrome.runtime.lastError);
+    if (toolWinId != null && chrome.windows) chrome.windows.update(toolWinId, { focused: true }, () => void chrome.runtime.lastError);
   }
 }
 
@@ -1250,7 +1527,7 @@ async function init() {
           if (cm) S.startChapterNo = +cm[1];
           const svc = new URL(src).searchParams.get("service");
           if (svc) S.startService = svc;
-          u = src.replace(/\/chapter-\d+\/?(?:[?#].*)?$/i, "");
+          u = src.replace(/\/(?:old\/)?chapter-\d+\/?(?:[?#].*)?$/i, "");
         }
         // kakuyomu: remember the opened episode id so Read-aloud starts on it.
         if (host.endsWith("kakuyomu.jp")) {
@@ -1260,7 +1537,10 @@ async function init() {
       }
     } catch {}
     $("url").value = u;
+    if ($("webUrl")) $("webUrl").value = src;
   }
+  // Opened from the on-site widget's "Open in Reader": jump straight into the reader.
+  const readUrl = params.get("read");
 
   $("analyse").addEventListener("click", analyse);
   $("url").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); analyse(); } });
@@ -1271,6 +1551,16 @@ async function init() {
     if (!/INPUT|SELECT|TEXTAREA|BUTTON/.test(tag)) { e.preventDefault(); doDownload(); }
   });
   if ($("readAloud")) $("readAloud").addEventListener("click", readAloud);
+  // Web Reader tab
+  if ($("webOpen")) $("webOpen").addEventListener("click", () => openWebReader());
+  if ($("webUrl")) $("webUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); openWebReader(); } });
+  if ($("webEnabled")) $("webEnabled").addEventListener("change", saveWebWidgetPrefs);
+  if ($("webAuto")) $("webAuto").addEventListener("change", saveWebWidgetPrefs);
+  if ($("webLang")) $("webLang").addEventListener("change", saveWebWidgetPrefs);
+  loadWebWidgetPrefs();
+  if ($("txMode")) $("txMode").addEventListener("change", updateTxFieldsUI);
+  if ($("txSave")) $("txSave").addEventListener("click", saveTxEngine);
+  loadTxEngine();
   $("pack").addEventListener("click", startPack);
   $("stop").addEventListener("click", () => { S.cancel = true; setStatus("Stopping…"); });
   $("update").addEventListener("click", updatePack);
@@ -1322,6 +1612,10 @@ async function init() {
   $("reverse").addEventListener("click", reverseChapters);
   if ($("translateTitles")) $("translateTitles").addEventListener("click", toggleTranslateTitles);
   if ($("translateMeta")) $("translateMeta").addEventListener("change", toggleTranslateMeta);
+  // glossary editor
+  if ($("glossaryAdd")) $("glossaryAdd").addEventListener("click", () => addGlossaryRow("", ""));
+  if ($("glossarySave")) $("glossarySave").addEventListener("click", saveGlossary);
+  if ($("glossaryScope")) $("glossaryScope").addEventListener("change", () => renderGlossaryRows(currentGlossaryList()));
   $("filter").addEventListener("input", filterRows);
   $("filterCheck").addEventListener("click", () => setChecksForShown(true));
   $("filterUncheck").addEventListener("click", () => setChecksForShown(false));
@@ -1357,7 +1651,9 @@ async function init() {
   // Load saved settings + any interrupted pack before auto-analysing.
   await loadPrefsAndResume();
 
+  // Opened from the widget's "Open in Reader" → go straight to the Web Reader.
+  if (readUrl) { setMode("web"); if ($("webUrl")) $("webUrl").value = readUrl; openWebReader(readUrl); }
   // Opened the extension while on wtr-lab → force novel mode and analyse right away.
-  if (autoAnalyse) { setMode("novel"); analyse(); }
+  else if (autoAnalyse) { setMode("novel"); analyse(); }
 }
 init();

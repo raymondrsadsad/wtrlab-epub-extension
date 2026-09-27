@@ -142,6 +142,7 @@ button.accent {
 button.accent:hover:not(:disabled) { background: var(--green); border-color: rgba(95, 154, 126, .55); }
 button.ghost { background: transparent; border-color: var(--border-strong); color: var(--muted); font-weight: 500; }
 button.ghost:hover:not(:disabled) { background: var(--btn-ghost-h); color: var(--fg); }
+button.ghost.active { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
 button.warn { color: var(--warn); border-color: rgba(204,162,87,.45); background: rgba(204,162,87,.14); font-weight: 600; }
 button.warn:hover:not(:disabled) { background: rgba(204,162,87,.22); }
 button.sm { padding: 6px 11px; font-size: 12.5px; }
@@ -355,6 +356,7 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 .tts-ctl.block { display: flex; }
 .tts-ctl input[type="range"] { accent-color: var(--accent); flex: 1; }
 .tts-ctl select { flex: 1; background: var(--field); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 7px; padding: 4px 6px; min-width: 0; }
+.tts-ctl input[type="number"] { width: 68px; background: var(--field); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 7px; padding: 4px 6px; font-size: 13px; }
 .tts-body .opt { font-size: 12.5px; }
 
 /* Contents drawer (hamburger) — used on all sizes */
@@ -373,6 +375,41 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 .reader-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); opacity: 0; visibility: hidden; transition: opacity .25s ease, visibility .25s ease; z-index: 75; }
 .reader-backdrop.open { opacity: 1; visibility: visible; }
 
+/* ---- reader Display panel (font / size / line-height / theme) ---- */
+.reader-display {
+  position: fixed; top: 0; right: 0; height: 100%; width: 320px; max-width: 88vw;
+  background: var(--card); border-left: 1px solid var(--border); box-shadow: var(--shadow);
+  transform: translateX(100%); transition: transform .25s ease; z-index: 80;
+  display: flex; flex-direction: column;
+}
+.reader-display.open { transform: translateX(0); }
+.reader-display .drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.reader-display .drawer-head .ttl { font-weight: 700; flex: 1; }
+.rd-body { padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+.rd-group { display: flex; flex-direction: column; gap: 8px; }
+.rd-label { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.rd-swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+.rd-swatch { width: 44px; height: 40px; border-radius: 9px; border: 2px solid var(--border-strong); cursor: pointer; font: 600 14px/1 Georgia, serif; display: flex; align-items: center; justify-content: center; padding: 0; }
+.rd-swatch.active { border-color: var(--accent); box-shadow: var(--ring); }
+.rd-seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.rd-opt { background: var(--btn); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 7px 10px; cursor: pointer; font-size: 13px; }
+.rd-opt:hover { background: var(--btn-h); }
+.rd-opt.active { background: var(--accent-soft); border-color: var(--accent-line); color: var(--fg); }
+.rd-input { background: var(--field); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; font-size: 13px; width: 100%; }
+.rd-stepper { display: flex; align-items: center; gap: 8px; }
+.rd-stepper .rd-opt { flex: 1; text-align: center; }
+.rd-val { min-width: 44px; text-align: center; font-weight: 700; }
+.rd-custom-colors { flex-direction: row; gap: 16px; }
+.rd-color { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.rd-color input[type="color"] { width: 40px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: none; padding: 0; cursor: pointer; }
+.rd-adv { border-top: 1px solid var(--border); padding-top: 10px; }
+.rd-adv > summary { cursor: pointer; font-weight: 600; font-size: 13px; margin-bottom: 10px; }
+.rd-adv .rd-group { margin-bottom: 12px; }
+.rd-toggles { gap: 6px; }
+.rd-import-row { display: flex; }
+.rd-import-row .rd-opt { flex: 1; text-align: center; }
+select.rd-input { cursor: pointer; }
+
 .reader-pane { min-width: 0; }
 .reader-navbar {
   position: sticky; top: 0; z-index: 40; display: flex; align-items: center; gap: 8px;
@@ -381,11 +418,33 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 }
 .reader-navbar .icon-btn { font-size: 18px; padding: 2px 8px; }
 .read-chaptitle { flex: 1; text-align: center; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Pinned by JS (readerview.js → updateNavPin) once the bar would scroll off-screen.
+   Works even where position: sticky doesn't (some Android browsers). */
+.reader-navspacer { height: 0; }
+.reader-navbar.pinned {
+  position: fixed; top: 0; margin: 0; padding: 8px 10px;
+  border-bottom: 1px solid var(--border); box-shadow: var(--shadow);
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
 /* immersive: hide the top bar + floating player while reading */
 #modeRead.immersive .reader-navbar { transform: translateY(-140%); opacity: 0; pointer-events: none; }
 #modeRead.immersive #ttsPlayer { transform: translateY(160%); opacity: 0; pointer-events: none; }
-.reader-content { font-family: Georgia, "Times New Roman", serif; font-size: 17px; line-height: 1.75; max-width: 40em; margin: 0 auto; overflow-wrap: anywhere; }
-.reader-content p { margin: 0 0 .9em; text-align: justify; }
+.reader-content {
+  font-family: var(--reader-font, Georgia, "Times New Roman", serif);
+  font-size: var(--reader-size, 17px);
+  line-height: var(--reader-lh, 1.75);
+  font-weight: var(--reader-weight, 400);
+  max-width: var(--reader-width, 40em);
+  margin: 0 auto; overflow-wrap: anywhere;
+}
+.reader-content p, .reader-content li { margin: 0 0 var(--reader-para-gap, .9em); text-align: var(--reader-align, justify); }
+.reader-content .chap-title { font-size: 1.3em; font-weight: 700; margin: 0 0 1em; text-align: left; }
+/* Custom reader theme (non-default): color the reading pane + navbar. */
+#modeRead.reader-themed #readBodyCard { background: var(--reader-bg); }
+#modeRead.reader-themed .reader-content,
+#modeRead.reader-themed .reader-content .chap-title,
+#modeRead.reader-themed #readChapTitle { color: var(--reader-fg); }
+#modeRead.reader-themed .reader-navbar { background: var(--reader-bg); color: var(--reader-fg); border-bottom-color: rgba(128,128,128,.25); }
 .reader-content img { max-width: 100%; height: auto; display: block; margin: 1.2em auto; border-radius: 4px; }
 .reader-content h1, .reader-content h2 { font-size: 1.2em; }
 .seg { cursor: pointer; border-radius: 3px; transition: background .12s ease; }
@@ -412,18 +471,48 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
   .import-line { flex-wrap: wrap; }
 
   /* mode tabs stay in one shrinkable row */
-  .modetabs { gap: 2px; }
-  .modetab { padding: 9px 6px; font-size: 12px; }
+  .modetabs { gap: 2px; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .modetabs::-webkit-scrollbar { display: none; }
+  .modetab { flex: none; white-space: nowrap; padding: 9px 10px; font-size: 12px; }
 
   /* reader */
-  .reader-content { font-size: 16px; max-width: 100%; }
+  .reader-content { max-width: 100%; }
   .reader-head { flex-wrap: wrap; }
   .reader-open { width: 100%; }
   .reader-open button { width: 100%; }
   .readservice, .readservice .modes { width: 100%; }
 
   /* floating TTS player: never wider than the screen, and reachable */
-  .tts-player { left: 8px; right: 8px; bottom: 8px; width: auto; max-width: none; max-height: 70vh; overflow-y: auto; }
-  .tts-player.collapsed { left: auto; right: 8px; width: auto; }
+  /* Always dock at the bottom on narrow screens — override any inline desktop position
+     left over from a drag (inline styles otherwise beat these rules). */
+  .tts-player { left: 8px !important; right: 8px !important; bottom: 8px !important; top: auto !important; width: auto !important; max-width: none; max-height: 70vh; overflow-y: auto; }
+  .tts-player.collapsed { left: auto !important; right: 8px !important; width: auto !important; }
   .tts-body .tts-row { flex-wrap: wrap; }
 }
+
+/* ---- glossary editor ---- */
+.glossary-box { margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card-2); padding: 8px 12px; }
+.glossary-box > summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.glossary-inner { padding-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.glossary-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.glossary-head label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.glossary-head select { background: var(--field); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: 4px 6px; }
+.glossary-rows { display: flex; flex-direction: column; gap: 6px; }
+.glossary-row { display: flex; align-items: center; gap: 6px; }
+.glossary-row input { background: var(--field); color: var(--fg); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; font-size: 13px; min-width: 0; flex: 1; }
+.glossary-row .gl-arrow { color: var(--muted); flex: none; }
+.glossary-row .gl-del { flex: none; padding: 4px 9px; }
+.glossary-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ---- library shelf ---- */
+.lib-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.lib-card { display: flex; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card-2); }
+.lib-cover { width: 52px; height: 74px; object-fit: cover; border-radius: 6px; flex: none; background: var(--field); }
+.lib-cover-empty { display: flex; align-items: center; justify-content: center; font-size: 26px; }
+.lib-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.lib-title { font-weight: 600; overflow-wrap: anywhere; }
+.lib-meta { font-size: 12px; color: var(--muted); }
+.lib-prog { font-size: 12px; color: var(--accent); }
+.lib-new { display: inline-block; margin-left: 6px; font-size: 11px; font-weight: 700; color: #fff; background: var(--green); border-radius: 999px; padding: 1px 8px; vertical-align: middle; }
+.lib-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.lib-follow.on { color: var(--warn); border-color: var(--warn); }

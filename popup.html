@@ -29,6 +29,8 @@
       <button class="modetab active" data-mode="novel" role="tab">Novel to EPUB</button>
       <button class="modetab" data-mode="merge" role="tab">EPUB Merger</button>
       <button class="modetab" data-mode="read" role="tab">Read EPUB</button>
+      <button class="modetab" data-mode="web" role="tab">Web Reader</button>
+      <button class="modetab" data-mode="library" role="tab">Library</button>
     </nav>
 
     <div id="modeNovel">
@@ -98,6 +100,27 @@
           <div class="import-hint"><em>Already have earlier chapters? Import your EPUB, then Pack — only the new chapters are fetched and merged into one file. Click a green ● to re-fetch just that chapter, or “Re-fetch all” for every one.</em></div>
         </div>
       </div>
+
+      <details id="glossaryBox" class="glossary-box hidden">
+        <summary>🔤 Fix names / terms (glossary)</summary>
+        <div class="glossary-inner">
+          <div class="glossary-head">
+            <label for="glossaryScope">Scope
+              <select id="glossaryScope">
+                <option value="novel">This novel</option>
+                <option value="*">All novels</option>
+              </select>
+            </label>
+            <span class="import-info">Replaces text after translation — e.g. 乾 → Qian. Applies to packing, the reader &amp; the on-site widget.</span>
+          </div>
+          <div id="glossaryRows" class="glossary-rows"></div>
+          <div class="glossary-actions">
+            <button id="glossaryAdd" type="button" class="ghost sm">+ Add term</button>
+            <button id="glossarySave" type="button" class="primary sm">Save glossary</button>
+            <span id="glossaryInfo" class="import-info"></span>
+          </div>
+        </div>
+      </details>
     </section>
 
     <div id="resumeBar" class="card resume hidden">
@@ -240,12 +263,18 @@
           </div>
           <label class="tts-ctl block">Voice <select id="ttsVoice"></select></label>
           <div class="tts-row">
-            <label class="tts-ctl">Speed <input id="ttsRate" type="range" min="0.5" max="2" step="0.1" value="1" /></label>
-            <span id="ttsRateVal" class="import-info">1.0×</span>
+            <label class="tts-ctl">Speed <input id="ttsRate" type="number" min="0.5" max="2" step="0.1" value="1.0" title="Reading speed" /></label>
+            <span class="import-info">×</span>
+          </div>
+          <div class="tts-row">
+            <label class="tts-ctl">Paragraph gap <input id="ttsPause" type="number" min="0" max="5" step="0.05" value="0.25" title="Pause between paragraphs, in seconds" /></label>
+            <span class="import-info">seconds</span>
           </div>
           <div class="tts-row wrap">
             <label class="opt"><input id="ttsFollow" type="checkbox" checked /> <span>Follow while speaking</span></label>
             <label class="opt"><input id="ttsHighlight" type="checkbox" checked /> <span>Highlight line</span></label>
+            <label class="opt"><input id="ttsSymbols" type="checkbox" checked /> <span>Read symbols ( ) ; / …</span></label>
+            <label class="opt"><input id="ttsAutoNext" type="checkbox" checked /> <span>Auto-play next chapter</span></label>
           </div>
           <div id="ttsHint" class="import-hint"><em>Click any line to start speaking from there.</em></div>
         </div>
@@ -253,14 +282,79 @@
 
       <div id="readBackdrop" class="reader-backdrop"></div>
       <aside id="readDrawer" class="reader-drawer">
-        <div class="drawer-head"><span class="ttl">Contents</span><button id="readTocReverse" class="ghost sm" type="button" title="Reverse chapter order">⇅ Reverse</button><button id="readDrawerClose" class="icon-btn" title="Close">✕</button></div>
+        <div class="drawer-head"><span class="ttl">Contents</span><button id="readTocTranslate" class="ghost sm" type="button" title="Translate chapter titles to English">🌐 Translate</button><button id="readTocReverse" class="ghost sm" type="button" title="Reverse chapter order">⇅ Reverse</button><button id="readDrawerClose" class="icon-btn" title="Close">✕</button></div>
         <div id="readToc" class="list"></div>
+      </aside>
+
+      <div id="readDisplayBackdrop" class="reader-backdrop"></div>
+      <aside id="readDisplayPanel" class="reader-display">
+        <div class="drawer-head"><span class="ttl">Display</span><button id="readDisplayClose" class="icon-btn" title="Close">✕</button></div>
+        <div class="rd-body">
+          <div class="rd-group">
+            <div class="rd-label">Reader theme</div>
+            <div id="readThemeRow" class="rd-swatches"></div>
+          </div>
+          <div class="rd-group rd-custom-colors hidden" id="readCustomColors">
+            <label class="rd-color">Background <input type="color" id="readBgColor" value="#ffffff" /></label>
+            <label class="rd-color">Text <input type="color" id="readFgColor" value="#111111" /></label>
+          </div>
+          <div class="rd-group">
+            <div class="rd-label">Font</div>
+            <select id="readFontSelect" class="rd-input"></select>
+            <div class="rd-import-row">
+              <button id="readFontImport" type="button" class="rd-opt">⬆ Import font file…</button>
+              <input id="readFontFile" type="file" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2,application/font-sfnt" hidden />
+            </div>
+          </div>
+          <div class="rd-group">
+            <div class="rd-label">Font size</div>
+            <div class="rd-stepper">
+              <button id="readSizeMinus" type="button" class="rd-opt">A −</button>
+              <span id="readSizeVal" class="rd-val">17</span>
+              <button id="readSizePlus" type="button" class="rd-opt">A +</button>
+            </div>
+          </div>
+          <div class="rd-group">
+            <div class="rd-label">Line height</div>
+            <div class="rd-stepper">
+              <button id="readLhMinus" type="button" class="rd-opt">Height −</button>
+              <span id="readLhVal" class="rd-val">1.75</span>
+              <button id="readLhPlus" type="button" class="rd-opt">Height +</button>
+            </div>
+          </div>
+          <details class="rd-adv">
+            <summary>Advanced</summary>
+            <div class="rd-group">
+              <div class="rd-label">Content width</div>
+              <div class="rd-stepper">
+                <button id="readWidthMinus" type="button" class="rd-opt">Narrower</button>
+                <span id="readWidthVal" class="rd-val">700</span>
+                <button id="readWidthPlus" type="button" class="rd-opt">Wider</button>
+              </div>
+            </div>
+            <div class="rd-group">
+              <div class="rd-label">Paragraph spacing</div>
+              <div class="rd-stepper">
+                <button id="readGapMinus" type="button" class="rd-opt">−</button>
+                <span id="readGapVal" class="rd-val">0.90</span>
+                <button id="readGapPlus" type="button" class="rd-opt">+</button>
+              </div>
+            </div>
+            <div class="rd-group rd-toggles">
+              <label class="opt"><input id="readJustify" type="checkbox" checked /> <span>Justify text</span></label>
+              <label class="opt"><input id="readBold" type="checkbox" /> <span>Bolder text</span></label>
+            </div>
+            <button id="readDisplayReset" type="button" class="ghost sm">Reset to defaults</button>
+          </details>
+        </div>
       </aside>
 
       <section class="card reader-body hidden" id="readBodyCard">
         <div class="reader-pane">
-          <div class="reader-navbar">
+          <div id="readNavSpacer" class="reader-navspacer" aria-hidden="true"></div>
+          <div class="reader-navbar" id="readNavbar">
             <button id="readMenu" class="icon-btn" title="Contents" aria-label="Contents">☰</button>
+            <button id="readDisplayBtn" class="icon-btn" title="Display settings (font, size, theme)" aria-label="Display settings">Aa</button>
             <button id="readPrev" class="ghost sm" title="Previous chapter (←)">← Prev</button>
             <span id="readChapTitle" class="read-chaptitle"></span>
             <button id="readNext" class="ghost sm" title="Next chapter (→)">Next →</button>
@@ -270,6 +364,83 @@
       </section>
       <section class="card"><div id="readStatus" class="status">Open an EPUB from your device to start reading.</div></section>
     </div><!-- /#modeRead -->
+
+    <div id="modeWeb" hidden>
+      <section class="card">
+        <div class="card-head"><h2>Web Reader</h2></div>
+        <div class="import-hint"><em>Read foreign-language web novels in English without leaving the site. Turn on the on-site widget, then on any novel page a small 🌐 button lets you <strong>translate the page in place</strong>, <strong>read it aloud</strong>, or open it in the full reader below — no more hopping back to the extension each chapter.</em></div>
+
+        <div class="row">
+          <span class="rowlbl">On-site tool</span>
+          <div class="optcol">
+            <label class="opt"><input id="webEnabled" type="checkbox" /> <span>Show the floating 🌐 widget on web pages <em>(collapsible bubble with Translate / Read aloud / Open in Reader)</em></span></label>
+            <label class="opt"><input id="webAuto" type="checkbox" /> <span>Auto-translate each new chapter as you browse</span></label>
+          </div>
+        </div>
+        <div class="row">
+          <label for="webLang">Translate to</label>
+          <select id="webLang">
+            <option value="en" selected>English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="pt">Portuguese</option>
+            <option value="ru">Russian</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="zh-CN">Chinese</option>
+            <option value="id">Indonesian</option>
+            <option value="vi">Vietnamese</option>
+            <option value="ar">Arabic</option>
+            <option value="hi">Hindi</option>
+            <option value="tl">Filipino</option>
+          </select>
+        </div>
+
+        <details id="txEngineBox" class="glossary-box">
+          <summary>⚙️ Translation engine (advanced)</summary>
+          <div class="glossary-inner">
+            <span class="import-info">Optional. Default is the free Google translator. Plug in DeepL or any OpenAI-compatible endpoint for higher quality — it applies everywhere (packing, reader &amp; widget) and falls back to Google automatically on any error.</span>
+            <div class="row">
+              <label for="txMode">Engine</label>
+              <select id="txMode">
+                <option value="google">Google (free, default)</option>
+                <option value="deepl">DeepL</option>
+                <option value="openai">OpenAI-compatible (LLM)</option>
+              </select>
+            </div>
+            <div id="txFields" class="hidden">
+              <div class="row"><label for="txKey">API key</label><input id="txKey" type="password" placeholder="Your API key" /></div>
+              <div class="row"><label for="txEndpoint">Endpoint</label><input id="txEndpoint" type="text" placeholder="(leave blank for default)" /></div>
+              <div class="row" id="txModelRow"><label for="txModel">Model</label><input id="txModel" type="text" placeholder="gpt-4o-mini" /></div>
+            </div>
+            <div class="glossary-actions">
+              <button id="txSave" type="button" class="primary sm">Save engine</button>
+              <span id="txInfo" class="import-info"></span>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Open a page in the reader</h2></div>
+        <div class="import-hint"><em>Prefer starting from here? Paste a chapter URL (or use the page you opened the extension on) to read it — translated — in the same reader as your EPUBs, with chapter navigation and text-to-speech.</em></div>
+        <div class="row url-row">
+          <label for="webUrl">Page URL</label>
+          <input id="webUrl" type="text" placeholder="Paste a novel chapter URL" />
+          <button id="webOpen" class="primary">📖 Open in Reader</button>
+        </div>
+        <div id="webStatus" class="status">Turn on the widget above, or paste a URL to read it here.</div>
+      </section>
+    </div><!-- /#modeWeb -->
+
+    <div id="modeLibrary" hidden>
+      <section class="card">
+        <div class="card-head"><h2>Library</h2></div>
+        <div class="import-hint"><em>Every novel you analyse or read shows up here — reopen it, jump back into the reader where you left off, or ★ follow it to be notified when new chapters release.</em></div>
+        <div id="libraryList" class="lib-list"></div>
+      </section>
+    </div><!-- /#modeLibrary -->
   </div>
 
   <script type="module" src="popup.js"></script>
