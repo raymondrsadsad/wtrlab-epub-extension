@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.12.3 — 2026-09-28
+
+### Fixed
+- **Read-aloud now speaks the chapter title (Kakuyomu).** Kakuyomu renders the episode
+  title outside the body container, so on-page Read-aloud skipped it and started at the
+  first line of prose; the title is now collected as the first spoken block. The clean
+  Reader overlay also resets to the title on every chapter change, so pressing Play no
+  longer resumes past it with a stale line index.
+
 ## 1.12.2 — 2026-09-27
 
 ### Fixed

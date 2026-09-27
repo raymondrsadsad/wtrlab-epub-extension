@@ -830,6 +830,19 @@
     });
     return out;
   }
+  // Some sites (e.g. Kakuyomu) render the chapter/episode title OUTSIDE the body
+  // container that pickContent()/collectBlocks() scan, so it never becomes a readable
+  // block and Read-aloud skips straight into the prose. Return it as a leading block so
+  // the title is spoken first — unless the first prose block already is the title.
+  function siteTitleBlock(firstText) {
+    const el = document.querySelector(".widget-episodeTitle"); // Kakuyomu episode heading
+    if (!el) return null;
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text) return null;
+    const f = (firstText || "").replace(/\s+/g, " ").trim();
+    if (f && (f === text || f.startsWith(text) || text.startsWith(f))) return null; // already covered
+    return { el, text };
+  }
   // Start from the first paragraph at/after the current scroll position, so Read aloud
   // begins on the chapter you're actually looking at (infinite-scroll pages hold several).
   function firstVisibleBlock(blocks) {
@@ -867,6 +880,8 @@
     // translation — if you want it translated, hit "Translate page" first.
     const blocks = pageReadableBlocks();
     if (!blocks.length) { setStatus("No readable text found on this page."); return; }
+    const tb = siteTitleBlock(blocks[0] && blocks[0].text); // prepend the title if the site keeps it outside the body
+    if (tb && !blocks.some((b) => b.el === tb.el)) blocks.unshift(tb);
     W.blocks = blocks; W.ttsHost = "page"; W.chunks = [];
     W.blocks.forEach((b) => b.el && b.el.classList.add("wr-readable")); // cursor hint: click to read from here
     const bar = W.panel.querySelector('[data-tts="panel"]');
@@ -946,7 +961,7 @@
     });
 
     stopTts();
-    W.blocks = ovBlocks; W.ttsHost = "overlay"; W.chunks = [];
+    W.blocks = ovBlocks; W.ttsHost = "overlay"; W.chunks = []; W.blockIdx = 0; // start at the title, not a stale index from the previous chapter
     ov.querySelector(".wr-ov-scroll").scrollTop = 0;
     togglePanel(false);
     setStatus("");
