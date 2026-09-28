@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.16.2 — 2026-09-29
+
+### Changed
+- **The floating Web Reader now stays where you put it.** It's pinned by whichever corner the
+  mini pill is nearest, so the expanded panel opens *from* the mini's spot (e.g. drag the bubble
+  to the bottom-left and the panel appears there, growing inward) and collapsing returns the mini
+  to exactly where you left it — instead of the panel jumping to a corner and the bubble not coming
+  back. Also fixes the panel running off the screen edge when opened near a border.
+
 ## 1.16.1 — 2026-09-29
 
 ### Fixed

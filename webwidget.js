@@ -428,35 +428,73 @@
     if (i >= 0) speakFrom(i);
   }
 
-  function applyPos() {
-    if (!W.mini) return;
-    if (CFG.pos && typeof CFG.pos.left === "number") {
-      W.root.style.left = CFG.pos.left + "px"; W.root.style.top = CFG.pos.top + "px";
-      W.root.style.right = "auto"; W.root.style.bottom = "auto";
+  // Position model: the widget is pinned by whichever CORNER the mini pill is nearest, not by a
+  // fixed top-left. CFG.pos = { ax:'left'|'right', ay:'top'|'bottom', x, y } where x/y are the
+  // distances from the anchored edges. This makes the expanded panel grow INWARD from the mini's
+  // corner (so it opens where the mini is and never runs off that edge), and — because the mini
+  // and panel share the same corner — collapsing returns the mini to exactly where it was.
+  // null = use the CSS default (bottom-right 18px). Legacy {left,top} saves migrate on first use.
+  const EDGE = 8;
+  function migratePos() {
+    // Convert an old {left,top} save into an anchor once the mini has a measured size.
+    if (CFG.pos && typeof CFG.pos.left === "number" && !CFG.pos.ax && W.mini) {
+      const w = W.mini.offsetWidth || 180, h = W.mini.offsetHeight || 44;
+      saveAnchorFromRect({ left: CFG.pos.left, top: CFG.pos.top, right: CFG.pos.left + w, bottom: CFG.pos.top + h, width: w, height: h });
+      saveCfg();
     }
   }
-
-  // Keep the whole widget (whatever is currently shown — the mini pill OR the expanded
-  // panel) inside the viewport. Uses the live rendered size so the wide panel reserves room
-  // the small pill doesn't, and pins to a margin when it's larger than the viewport.
+  function applyPos() {
+    if (!W.root) return;
+    migratePos();
+    const a = CFG.pos;
+    if (!a || !a.ax) return; // keep the CSS default (right/bottom: 18px)
+    pinCorner(a.ax, a.ay, a.x, a.y);
+  }
+  // Pin W.root by the given corner at (x,y) from those edges; free the opposite sides.
+  function pinCorner(ax, ay, x, y) {
+    const s = W.root.style;
+    if (ax === "left") { s.left = x + "px"; s.right = "auto"; } else { s.right = x + "px"; s.left = "auto"; }
+    if (ay === "top") { s.top = y + "px"; s.bottom = "auto"; } else { s.bottom = y + "px"; s.top = "auto"; }
+  }
+  // Choose the nearest corner from an element's viewport rect and store it as CFG.pos, clamped so
+  // the element stays on-screen. Used on drag-end and when migrating a legacy position.
+  function saveAnchorFromRect(rect) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const ax = (rect.left + rect.width / 2) > vw / 2 ? "right" : "left";
+    const ay = (rect.top + rect.height / 2) > vh / 2 ? "bottom" : "top";
+    let x = ax === "left" ? rect.left : vw - rect.right;
+    let y = ay === "top" ? rect.top : vh - rect.bottom;
+    x = Math.max(EDGE, Math.min(x, vw - rect.width - EDGE));
+    y = Math.max(EDGE, Math.min(y, vh - rect.height - EDGE));
+    CFG.pos = { ax, ay, x, y };
+  }
+  // Place the expanded panel at the mini's corner, but clamp the offset to the panel's own size so
+  // the larger box stays fully on-screen — WITHOUT changing CFG.pos, so the mini's saved spot (and
+  // where it returns to on collapse) is untouched.
+  function applyPanelPos() {
+    if (!W.root || !W.panel) return;
+    const a = CFG.pos;
+    if (!a || !a.ax) return; // default bottom-right corner already grows inward
+    const w = W.panel.offsetWidth || 300, h = W.panel.offsetHeight || 300;
+    const x = Math.max(EDGE, Math.min(a.x, window.innerWidth - w - EDGE));
+    const y = Math.max(EDGE, Math.min(a.y, window.innerHeight - h - EDGE));
+    pinCorner(a.ax, a.ay, x, y);
+  }
+  // Keep the currently shown element on-screen (used for live drag, where the mini/panel is moved
+  // by raw left/top). Uses the live rendered size and pins to a margin if it's bigger than the view.
   function clampXY(left, top) {
-    const m = 8;
+    const m = EDGE;
     const rw = (W.root && W.root.offsetWidth) || 60;
     const rh = (W.root && W.root.offsetHeight) || 60;
     const maxL = Math.max(m, window.innerWidth - rw - m);
     const maxT = Math.max(m, window.innerHeight - rh - m);
     return { left: Math.max(m, Math.min(maxL, left)), top: Math.max(m, Math.min(maxT, top)) };
   }
-
-  // Re-clamp the current explicit position (only when the user has dragged; otherwise the
-  // default bottom-right CSS anchor keeps the panel on-screen on its own). Called after
-  // expanding and on window resize so a panel opened near an edge doesn't overflow.
+  // Re-assert position when the viewport changes (resize / rotate): the panel if it's open, else
+  // the mini, both from the stored corner.
   function clampIntoView() {
-    if (!W.root || !CFG.pos || typeof CFG.pos.left !== "number") return;
-    const c = clampXY(CFG.pos.left, CFG.pos.top);
-    W.root.style.left = c.left + "px"; W.root.style.top = c.top + "px";
-    W.root.style.right = "auto"; W.root.style.bottom = "auto";
-    if (c.left !== CFG.pos.left || c.top !== CFG.pos.top) { CFG.pos = c; saveCfg(); }
+    if (!W.root || !CFG.pos || !CFG.pos.ax) return;
+    if (W.panel && !W.panel.classList.contains("wr-hidden")) applyPanelPos(); else applyPos();
   }
 
   function initDrag(handle) {
@@ -475,9 +513,18 @@
       const { left: nx, top: ny } = clampXY(ox + dx, oy + dy);
       W.root.style.left = nx + "px"; W.root.style.top = ny + "px";
       W.root.style.right = "auto"; W.root.style.bottom = "auto";
-      CFG.pos = { left: nx, top: ny };
     });
-    const end = (e) => { if (!drag) return; drag = false; try { handle.releasePointerCapture(e.pointerId); } catch (_) {} if (moved) { W._dragged = true; saveCfg(); setTimeout(() => (W._dragged = false), 0); } };
+    const end = (e) => {
+      if (!drag) return; drag = false;
+      try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+      if (moved) {
+        // Convert the dragged position into a corner anchor from whatever is on screen (mini or
+        // panel). Both pin by the same corner, so the pair stays co-located across expand/collapse.
+        saveAnchorFromRect(W.root.getBoundingClientRect());
+        applyPos();
+        W._dragged = true; saveCfg(); setTimeout(() => (W._dragged = false), 0);
+      }
+    };
     handle.addEventListener("pointerup", end);
     handle.addEventListener("pointercancel", end);
   }
@@ -487,10 +534,9 @@
     const open = show != null ? show : W.panel.classList.contains("wr-hidden");
     W.panel.classList.toggle("wr-hidden", !open);
     W.mini.classList.toggle("wr-hidden", open);
-    // Re-clamp AFTER the panel is visible: it's now the wider element, so if the bubble was
-    // dragged near an edge the panel would otherwise overflow past it. clampIntoView measures
-    // the live size and nudges the widget back fully on-screen.
-    if (open) { updateZoomLabel(); clampIntoView(); }
+    // Expanding: place the panel at the mini's corner and grow inward (clamped to fit) — it opens
+    // where the mini is. Collapsing: restore the mini to its own saved corner.
+    if (open) { updateZoomLabel(); applyPanelPos(); } else { applyPos(); }
   }
 
   function setStatus(t) { if (W.statusEl) W.statusEl.textContent = t; }
