@@ -60,6 +60,9 @@
     ["hi", "Hindi"], ["tl", "Filipino"],
   ];
   const CFG = { enabled: false, autoTranslate: false, targetLang: "en", rate: 1, sentPause: 250, voiceName: "", follow: true, highlight: true, readSymbols: true, autoNext: true, pos: null, ttsCollapsed: false,
+    // Page zoom: unlockZoom re-enables native pinch-zoom on sites that block it; zoomByHost is
+    // a remembered CSS-zoom factor per hostname (set from the widget's Zoom control).
+    unlockZoom: true, zoomByHost: {},
     // Reader-mode overlay display settings (font / size / line-height / theme + advanced).
     ovTheme: "default", ovBg: "#ffffff", ovFg: "#111111", ovFont: "", ovImportedFont: null, ovSize: 18, ovLh: 1.7,
     ovWidth: 720, ovGap: 1.1, ovJustify: false, ovBold: false };
@@ -217,6 +220,57 @@
   }
   function saveCfg() { try { store && store.set({ webWidget: { ...CFG } }); } catch (_) {} }
 
+  // ---------- page zoom / pinch-zoom unlock ----------
+  // Many reader/manga sites ship <meta name="viewport" content="...user-scalable=no,
+  // maximum-scale=1">, which disables the browser's native pinch-to-zoom so oversized images
+  // can't be shrunk. We rewrite that meta to permit scaling again. We ONLY edit an existing
+  // viewport meta (never create one — adding width=device-width to a desktop site would reflow
+  // it), and only write when it actually needs changing, so the periodic re-apply is a no-op on
+  // steady pages.
+  function unlockViewport() {
+    if (CFG.unlockZoom === false) return;
+    const m = document.querySelector('meta[name="viewport"]');
+    if (!m) return;
+    const cur = m.getAttribute("content") || "";
+    let parts = cur.split(",").map((s) => s.trim()).filter(Boolean)
+      .filter((p) => !/^user-scalable\s*=/i.test(p) && !/^maximum-scale\s*=/i.test(p) && !/^minimum-scale\s*=/i.test(p));
+    parts.push("user-scalable=yes", "maximum-scale=5", "minimum-scale=0.25");
+    const next = parts.join(", ");
+    if (next !== cur) m.setAttribute("content", next);
+  }
+
+  const zoomHost = () => { try { return location.hostname || ""; } catch (_) { return ""; } };
+  const getZoom = () => {
+    const z = CFG.zoomByHost && CFG.zoomByHost[zoomHost()];
+    return (typeof z === "number" && isFinite(z) && z > 0) ? z : 1;
+  };
+  // Scale the page via CSS zoom on <body> — NOT documentElement — so the widget and reader
+  // overlay (both children of <html>, outside <body>) are never scaled with the page.
+  function applyZoom() {
+    const b = document.body; if (!b) return;
+    const z = getZoom();
+    const want = z === 1 ? "" : String(z);
+    if (b.style.zoom !== want) b.style.zoom = want;
+    updateZoomLabel();
+  }
+  function setZoom(z) {
+    z = Math.min(2, Math.max(0.4, Math.round(z * 100) / 100));
+    CFG.zoomByHost = CFG.zoomByHost || {};
+    if (z === 1) delete CFG.zoomByHost[zoomHost()]; else CFG.zoomByHost[zoomHost()] = z;
+    saveCfg();
+    applyZoom();
+  }
+  function updateZoomLabel() {
+    const el = W.panel && W.panel.querySelector('[data-zoom="val"]');
+    if (el) el.textContent = Math.round(getZoom() * 100) + "%";
+  }
+  // Keep viewport + zoom applied through SPA re-renders / late meta injection. Idempotent, so
+  // this cheap tick runs even when the widget UI is disabled.
+  function startZoomWatch() {
+    if (W._zoomTimer) return;
+    W._zoomTimer = setInterval(() => { try { unlockViewport(); applyZoom(); } catch (_) {} }, 2000);
+  }
+
   // ---------- state ----------
   const W = {
     root: null, mini: null, panel: null, overlay: null, statusEl: null,
@@ -272,6 +326,13 @@
           <select class="wr-sel" data-act="lang"></select>
         </label>
         <label class="wr-check"><input type="checkbox" data-act="auto"> <span>Auto-translate new chapters</span></label>
+        <div class="wr-zoom">
+          <span class="wr-zoom-label">Page zoom</span>
+          <button class="wr-btn wr-zoom-btn" data-act="zoom-out" title="Smaller">−</button>
+          <span class="wr-zoom-val" data-zoom="val">100%</span>
+          <button class="wr-btn wr-zoom-btn" data-act="zoom-in" title="Larger">+</button>
+          <button class="wr-btn wr-zoom-btn" data-act="zoom-reset" title="Reset to 100%">⟲</button>
+        </div>
       </div>
       <div class="wr-tts wr-hidden" data-tts="panel"></div>
       <div class="wr-status">Ready.</div>`;
@@ -310,12 +371,10 @@
     // remember where it was; resume from there when the tab is shown again.
     if (!W._visBound) {
       document.addEventListener("visibilitychange", () => {
-        if (document.hidden) {
-          if (W.speaking && !W.paused) { W.resumeIdx = W.blockIdx; W.autoPaused = true; stopTts(); }
-        } else if (W.autoPaused) {
-          W.autoPaused = false;
-          if (typeof W.resumeIdx === "number") speakFrom(W.resumeIdx);
-        }
+        // Stop speaking when hidden (no background interleaving); do NOT auto-resume on return —
+        // that surprised the user by blasting audio on tab-switch. Position is kept (W.blockIdx)
+        // so pressing Play continues from there. (Matches readerview.js.)
+        if (document.hidden && W.speaking) stopTts();
       });
       W._visBound = true;
     }
@@ -380,6 +439,7 @@
     const open = show != null ? show : W.panel.classList.contains("wr-hidden");
     W.panel.classList.toggle("wr-hidden", !open);
     W.mini.classList.toggle("wr-hidden", open);
+    if (open) updateZoomLabel();
   }
 
   function setStatus(t) { if (W.statusEl) W.statusEl.textContent = t; }
@@ -389,6 +449,11 @@
     if (!b) return;
     const act = b.dataset.act;
     if (act === "collapse" || act === "close") return togglePanel(false); // collapse to bubble (never disable from the page)
+    // Page zoom is a local DOM/storage operation — works even on a stale tab, so handle it
+    // before the extension-context gate below.
+    if (act === "zoom-in") return setZoom(getZoom() + 0.1);
+    if (act === "zoom-out") return setZoom(getZoom() - 0.1);
+    if (act === "zoom-reset") return setZoom(1);
     if (!extAlive()) { setStatus(RELOAD_MSG); return; } // stale tab after an extension update
     if (act === "translate") return translatePage();
     if (act === "original") return toggleOriginal();
@@ -1102,6 +1167,7 @@
       }
       if (location.href === lastHref) return;
       lastHref = location.href;
+      try { unlockViewport(); applyZoom(); } catch (_) {} // re-assert zoom for the new page immediately
       // page changed (SPA): reset translation + adapter cache, optionally re-translate
       W.translated = false; W.showingOriginal = false; W.blocks = []; W.txNodes = [];
       W.adapterUrl = null; W.adapterContent = undefined;
@@ -1115,6 +1181,8 @@
   async function init() {
     await loadCfg();
     loadGlossary();
+    // Page zoom / pinch-zoom unlock runs on EVERY page, even when the widget UI is disabled.
+    try { unlockViewport(); applyZoom(); startZoomWatch(); } catch (_) {}
     if (!CFG.enabled) { watchEnableFlag(); return; }
     build();
     if (W.synth) { loadVoices(); W.synth.onvoiceschanged = loadVoices; }

@@ -108,6 +108,11 @@
   background: var(--wr-bg2); color: var(--wr-fg); font-size: 13px;
 }
 #wr-root .wr-check { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--wr-fg); cursor: pointer; padding: 3px 0; }
+/* Page-zoom row */
+#wr-root .wr-zoom { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+#wr-root .wr-zoom-label { font-size: 13px; color: var(--wr-muted); margin-right: auto; }
+#wr-root .wr-zoom-val { font-size: 13px; color: var(--wr-fg); min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+#wr-root .wr-zoom-btn { width: 34px; padding: 6px 0; text-align: center; font-size: 15px; flex: none; }
 /* Custom checkbox so OFF vs ON is unmistakable: empty bordered box vs filled box + tick. */
 #wr-root .wr-check input {
   appearance: none; -webkit-appearance: none;

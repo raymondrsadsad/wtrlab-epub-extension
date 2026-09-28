@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.15.0 — 2026-09-28
+
+### Added
+- **Freely resize any web page.** Many reader/manga sites disable pinch-to-zoom
+  (`user-scalable=no` in their viewport), so oversized cover art and pages can't be shrunk on a
+  phone/tablet. The on-page content script now re-enables native pinch-zoom on every site (only
+  editing an existing viewport tag, never adding one, so desktop layouts are untouched). Toggle
+  it in the extension's **Web Reader** tab → "Allow pinch-zoom on every page" (on by default).
+- **Per-site page zoom.** The floating 🌐 widget's panel gains a **Page zoom** row (− / % / + /
+  ⟲) that scales the page (via CSS zoom on the page body, so the widget itself isn't scaled) and
+  remembers the level per website.
+
+### Fixed
+- **On-site Read-aloud no longer auto-resumes when you switch back to the tab** — matching the
+  in-extension reader fix from 1.14.0. Hiding the tab still stops speech (no background
+  interleaving); returning keeps your place and waits for Play.
+
 ## 1.14.0 — 2026-09-28
 
 ### Fixed

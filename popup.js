@@ -1189,6 +1189,7 @@ function loadWebWidgetPrefs() {
       const cfg = (o && o.webWidget) || {};
       if ($("webEnabled")) $("webEnabled").checked = !!cfg.enabled;
       if ($("webAuto")) $("webAuto").checked = !!cfg.autoTranslate;
+      if ($("webUnlockZoom")) $("webUnlockZoom").checked = cfg.unlockZoom !== false; // default on
       if ($("webLang") && cfg.targetLang) $("webLang").value = cfg.targetLang;
     });
   } catch (e) { /* ignore */ }
@@ -1200,6 +1201,7 @@ function saveWebWidgetPrefs() {
       const cfg = (o && o.webWidget) || {};
       cfg.enabled = $("webEnabled") ? $("webEnabled").checked : cfg.enabled;
       cfg.autoTranslate = $("webAuto") ? $("webAuto").checked : cfg.autoTranslate;
+      if ($("webUnlockZoom")) cfg.unlockZoom = $("webUnlockZoom").checked;
       if ($("webLang")) cfg.targetLang = $("webLang").value;
       store.set({ webWidget: cfg });
     });
@@ -1859,6 +1861,7 @@ async function init() {
   if ($("webUrl")) $("webUrl").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); openWebReader(); } });
   if ($("webEnabled")) $("webEnabled").addEventListener("change", saveWebWidgetPrefs);
   if ($("webAuto")) $("webAuto").addEventListener("change", saveWebWidgetPrefs);
+  if ($("webUnlockZoom")) $("webUnlockZoom").addEventListener("change", saveWebWidgetPrefs);
   if ($("webLang")) $("webLang").addEventListener("change", saveWebWidgetPrefs);
   loadWebWidgetPrefs();
   if ($("txMode")) $("txMode").addEventListener("change", updateTxFieldsUI);
