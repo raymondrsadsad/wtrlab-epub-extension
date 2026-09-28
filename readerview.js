@@ -5,7 +5,11 @@ import { translateAll } from "./adapters/translate.js";
 
 const $ = (id) => document.getElementById(id);
 const store = (typeof chrome !== "undefined" && chrome.storage) ? chrome.storage.local : null;
-const synth = window.speechSynthesis;
+// speechSynthesis is absent on some browsers. Use a no-op shim so opening/reading a book never
+// throws (loadVoices then finds 0 voices and shows the graceful "speech unavailable" hint); guard
+// the actual speak path with TTS_OK so pressing Play is a quiet no-op rather than a crash.
+const synth = window.speechSynthesis || { getVoices: () => [], speak() {}, cancel() {}, pause() {}, resume() {} };
+const TTS_OK = !!(window.speechSynthesis && window.SpeechSynthesisUtterance);
 
 const R = {
   book: null, bookKey: null,
@@ -106,23 +110,14 @@ async function openFile(file) {
     $("readCaptcha").classList.add("hidden");
 
     R.tocTranslated = false; R.tocTitlesEn = null; updateTocTranslateBtn();
+    R.chapter = 0; // reset before renderToc so the "current" row isn't the previous book's index
     renderToc();
     $("ttsPlayer").classList.remove("hidden");
     $("readBodyCard").classList.remove("hidden");
     loadVoices();
     setStatus(`${chapters.length} chapters loaded.`);
 
-    // resume?
-    const prog = await getProgress(R.bookKey);
-    if (prog && (prog.chapterIndex > 0 || prog.segIndex > 0)) {
-      $("readResumeMsg").textContent = `Resume: ${prog.title || "Chapter " + (prog.chapterIndex + 1)} · line ${prog.segIndex + 1}`;
-      $("readResume").classList.remove("hidden");
-      $("readResumeBtn").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(prog.chapterIndex, prog.segIndex, false); };
-      $("readResumeStart").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(0, 0, false); };
-    } else {
-      $("readResume").classList.add("hidden");
-      loadChapter(0, 0, false);
-    }
+    showResume(await getProgress(R.bookKey));
   } catch (e) {
     console.error("read open failed", e);
     setStatus("Could not open: " + e.message);
@@ -204,6 +199,11 @@ function updateNavPin() {
 }
 // Programmatic scroll (e.g. TTS follow) shouldn't toggle the chrome.
 function markProgScroll() { R.progScroll = Date.now(); }
+// Show the floating "back to top" button once the reader is scrolled down a screenful.
+function updateReadTop() {
+  const b = $("readTop"); if (!b) return;
+  b.classList.toggle("hidden", $("modeRead").hidden || window.scrollY < 400);
+}
 function onReaderScroll() {
   if (Date.now() - R.progScroll < 700) { R.lastY = window.scrollY; return; }
   const y = window.scrollY, dy = y - R.lastY;
@@ -215,10 +215,12 @@ function onReaderScroll() {
 
 // ---- render a chapter + build speakable segments ----
 // One segment per PARAGRAPH (block) — TTS reads a whole paragraph as a unit and
-// highlights it as a unit; the pause falls only at paragraph breaks.
+// highlights it as a unit; the pause falls only at paragraph breaks. One selector shared with
+// the "chapter already opens with its title" dedupe check so the two never diverge.
+const SEG_SEL = "p, h1, h2, h3, h4, h5, h6, li, blockquote";
 function buildSegments(root) {
   const segs = [];
-  root.querySelectorAll("p, h1, h2, h3, h4, li, blockquote").forEach((block) => {
+  root.querySelectorAll(SEG_SEL).forEach((block) => {
     if (block.querySelector("img")) return; // keep image-bearing blocks intact
     const text = block.textContent.replace(/\s+/g, " ").trim();
     if (!text) return;
@@ -268,7 +270,12 @@ async function loadChapter(i, seg, speak) {
     // chapter but DON'T auto-speak — otherwise a pending auto-next would start talking after
     // you've already left.
     const stillCurrent = (R.token === startToken);
-    await renderLoaded(i, seg, speak && stillCurrent);
+    try {
+      await renderLoaded(i, seg, speak && stillCurrent);
+    } catch (e) {
+      console.error("render failed", e);
+      setStatus("⚠ " + (e.message || "Could not display this chapter."));
+    }
   } finally {
     R.loading = false;
   }
@@ -288,7 +295,7 @@ async function renderLoaded(i, seg, speak) {
   // opens with it, to avoid saying the title twice).
   const titleText = (ch.title || "").replace(/\s+/g, " ").trim();
   if (titleText) {
-    const fb = wrap.querySelector("p, h1, h2, h3, h4, h5, h6, li, blockquote");
+    const fb = wrap.querySelector(SEG_SEL);
     const fbText = fb ? (fb.textContent || "").replace(/\s+/g, " ").trim() : "";
     const dup = fbText && (fbText === titleText || fbText.startsWith(titleText) || titleText.startsWith(fbText));
     if (!dup) { const h = document.createElement("h2"); h.className = "chap-title"; h.textContent = titleText; wrap.insertBefore(h, wrap.firstChild); }
@@ -341,7 +348,7 @@ function buildChunks() {
 }
 function chunkForSeg(i) {
   for (let c = 0; c < R.chunks.length; c++) if (R.chunks[c].gi >= i) return c;
-  return 0;
+  return R.chunks.length; // past the end → playChunk's bounds guard stops/advances (never restart at 0)
 }
 // End of a chapter's TTS: auto-advance to the next chapter when enabled, else stop.
 function advanceChapterOrStop() {
@@ -389,6 +396,7 @@ function gapBetween(a, b) {
   return R.chunks[b].gi !== R.chunks[a].gi ? (R.sentPause || 0) : 0;
 }
 function speakFrom(i) {
+  if (!TTS_OK) return; // no speech engine — reading still works, Play just does nothing
   synth.cancel();
   if (R.pauseTimer) { clearTimeout(R.pauseTimer); R.pauseTimer = null; }
   R.utters = [];
@@ -435,12 +443,13 @@ function playChunk(c, t) {
     if (gap > 0) R.pauseTimer = setTimeout(() => { R.pauseTimer = null; if (t === R.token && !R.paused) playChunk(nx, t); }, gap);
     // gap === 0 → the next chunk was already pipelined in onstart; nothing to do here.
   };
-  u.onerror = () => { if (t !== R.token) return; const nx = c + 1; if (nx < R.chunks.length) playChunk(nx, t); };
+  u.onerror = () => { if (t !== R.token) return; const nx = c + 1; if (nx < R.chunks.length) playChunk(nx, t); else if (c === R.chunks.length - 1) advanceChapterOrStop(); };
   R.utters.push(u); // hold refs so utterances aren't garbage-collected mid-speech
+  if (R.utters.length > 3) R.utters.shift(); // ...but only the active few; don't grow all chapter
   synth.speak(u);
 }
 function togglePlay() {
-  if (!R.book) return;
+  if (!R.book || !TTS_OK) return;
   if (!R.speaking) { speakFrom(R.segIndex || 0); return; }
   if (R.paused) {
     // Resume. speechSynthesis.pause()/resume() is unreliable — especially on Android's shared
@@ -502,7 +511,9 @@ function pickDefaultVoiceIndex(voices, bookLang) {
     tryChain.push(voices.findIndex((v) => /en[-_]us/i.test(v.lang || "")));
   }
   const idx = tryChain.find((i) => i >= 0);
-  return idx == null ? 0 : idx;
+  if (idx != null) return idx;
+  const anyEn = voices.findIndex((v) => /^en/i.test(v.lang || "")); // prefer any English over an arbitrary voice
+  return anyEn >= 0 ? anyEn : 0;
 }
 function loadVoices() {
   const voices = synth.getVoices();
@@ -538,19 +549,36 @@ function saveProgressSoon() {
   if (R.saveTimer) clearTimeout(R.saveTimer);
   R.saveTimer = setTimeout(saveProgress, 600);
 }
+// Show the resume banner (or start from the top when there's nothing to resume). Shared by the
+// file-open and live-open paths so they can't drift.
+function showResume(prog, start = 0) {
+  if (prog && (prog.chapterIndex > start || (prog.chapterIndex === start && prog.segIndex > 0))) {
+    $("readResumeMsg").textContent = `Resume: ${prog.title || "Chapter " + (prog.chapterIndex + 1)} · line ${prog.segIndex + 1}`;
+    $("readResume").classList.remove("hidden");
+    $("readResumeBtn").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(prog.chapterIndex, prog.segIndex, false); };
+    $("readResumeStart").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(start, 0, false); };
+  } else {
+    $("readResume").classList.add("hidden");
+    loadChapter(start, 0, false);
+  }
+}
+// Serialize progress writes so two saves (or a save racing an open of another book) can't
+// interleave get/get/set/set and drop another book's entry. Snapshot the values now so the
+// queued write records where we were when saveProgress was called, not wherever R.* has moved to.
+let _rpChain = Promise.resolve();
 function saveProgress() {
   if (!store || !R.bookKey || !R.book) return;
-  try {
-    store.get("readProgress", (o) => {
-      const map = (o && o.readProgress) || {};
-      map[R.bookKey] = {
-        chapterIndex: R.chapter, segIndex: R.segIndex,
-        title: (R.book.chapters[R.chapter] && R.book.chapters[R.chapter].title) || `Chapter ${R.chapter + 1}`,
-        updatedAt: Date.now(),
-      };
-      store.set({ readProgress: map });
-    });
-  } catch (_) { /* ignore */ }
+  const key = R.bookKey, chapterIndex = R.chapter, segIndex = R.segIndex;
+  const title = (R.book.chapters[chapterIndex] && R.book.chapters[chapterIndex].title) || `Chapter ${chapterIndex + 1}`;
+  _rpChain = _rpChain.then(() => new Promise((resolve) => {
+    try {
+      store.get("readProgress", (o) => {
+        const map = (o && o.readProgress) || {};
+        map[key] = { chapterIndex, segIndex, title, updatedAt: Date.now() };
+        try { store.set({ readProgress: map }, () => resolve()); } catch (_) { resolve(); }
+      });
+    } catch (_) { resolve(); }
+  }));
 }
 
 // ---- reader Display (font / size / line-height / theme) ----
@@ -675,16 +703,34 @@ function saveReaderPrefs() {
 }
 function applyPlayerPos() {
   const pl = $("ttsPlayer");
-  // On narrow screens ignore any saved desktop position (it could be off-screen) and
-  // let the CSS dock the player full-width at the bottom.
-  if (window.innerWidth > 560 && R.pos && typeof R.pos.left === "number") {
-    pl.style.right = "auto"; pl.style.bottom = "auto";
-    pl.style.left = R.pos.left + "px"; pl.style.top = R.pos.top + "px";
-  } else {
-    pl.style.left = ""; pl.style.top = ""; pl.style.right = ""; pl.style.bottom = "";
-  }
+  // Collapse state first so the size we measure below matches what's shown.
   pl.classList.toggle("collapsed", !!R.collapsed);
   $("ttsCollapse").textContent = R.collapsed ? "▸" : "▾";
+  // On narrow screens ignore any saved desktop position (it could be off-screen) and
+  // let the CSS dock the player full-width at the bottom.
+  if (!(window.innerWidth > 560) || !R.pos) {
+    pl.style.left = ""; pl.style.top = ""; pl.style.right = ""; pl.style.bottom = "";
+    return;
+  }
+  const L = globalThis.WRLayout;
+  // Migrate a legacy {left,top} save to a corner anchor once we can measure the player.
+  if (typeof R.pos.left === "number" && !R.pos.ax && L) {
+    const w = pl.offsetWidth || 200, h = pl.offsetHeight || 60;
+    R.pos = L.cornerAnchor({ left: R.pos.left, top: R.pos.top, right: R.pos.left + w, bottom: R.pos.top + h, width: w, height: h }, innerWidth, innerHeight, 4);
+  }
+  const a = R.pos;
+  if (!a.ax || !L) { // no shared geometry (shouldn't happen) — fall back to raw left/top
+    pl.style.right = "auto"; pl.style.bottom = "auto";
+    pl.style.left = (a.left || 0) + "px"; pl.style.top = (a.top || 0) + "px";
+    return;
+  }
+  // Pin by the anchored corner and clamp the CURRENT (collapsed OR expanded) size into view, so
+  // expanding a pill docked at an edge grows INWARD instead of off-screen — no second tap needed.
+  const c = L.clampCorner(a.x, a.y, pl.offsetWidth, pl.offsetHeight, innerWidth, innerHeight, 4);
+  pl.style.left = a.ax === "left" ? c.x + "px" : "auto";
+  pl.style.right = a.ax === "right" ? c.x + "px" : "auto";
+  pl.style.top = a.ay === "top" ? c.y + "px" : "auto";
+  pl.style.bottom = a.ay === "bottom" ? c.y + "px" : "auto";
 }
 function initDrag() {
   const bar = $("ttsDrag"), pl = $("ttsPlayer");
@@ -705,7 +751,14 @@ function initDrag() {
     pl.style.left = nx + "px"; pl.style.top = ny + "px";
     R.pos = { left: nx, top: ny };
   });
-  const end = (e) => { if (!drag) return; drag = false; pl.classList.remove("dragging"); try { bar.releasePointerCapture(e.pointerId); } catch (_) {} saveReaderPrefs(); };
+  const end = (e) => {
+    if (!drag) return; drag = false; pl.classList.remove("dragging");
+    try { bar.releasePointerCapture(e.pointerId); } catch (_) {}
+    // Store where it landed as a corner anchor so expand/collapse grows inward from that corner.
+    const L = globalThis.WRLayout;
+    if (L) { R.pos = L.cornerAnchor(pl.getBoundingClientRect(), innerWidth, innerHeight, 4); applyPlayerPos(); }
+    saveReaderPrefs();
+  };
   bar.addEventListener("pointerup", end);
   bar.addEventListener("pointercancel", end);
 }
@@ -728,6 +781,7 @@ export function openLive({ meta, chapters, bookKey, provider, startIndex }) {
   $("readResume").classList.add("hidden");
 
   R.tocTranslated = false; R.tocTitlesEn = null; updateTocTranslateBtn();
+  R.chapter = 0; // reset before renderToc so the "current" row isn't the previous book's index
   renderToc();
   $("ttsPlayer").classList.remove("hidden");
   $("readBodyCard").classList.remove("hidden");
@@ -735,18 +789,9 @@ export function openLive({ meta, chapters, bookKey, provider, startIndex }) {
 
   const start = (typeof startIndex === "number" && startIndex >= 0 && startIndex < chapters.length) ? startIndex : 0;
   setStatus(`${chapters.length} chapters — reading from chapter ${start + 1}.`);
-  // Offer to resume where you left off (same as file mode). Saved progress that's
-  // further along than the opened chapter shows a Continue banner; otherwise start here.
-  getProgress(R.bookKey).then((prog) => {
-    if (prog && (prog.chapterIndex > start || (prog.chapterIndex === start && prog.segIndex > 0))) {
-      $("readResumeMsg").textContent = `Resume: ${prog.title || "Chapter " + (prog.chapterIndex + 1)} · line ${prog.segIndex + 1}`;
-      $("readResume").classList.remove("hidden");
-      $("readResumeBtn").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(prog.chapterIndex, prog.segIndex, false); };
-      $("readResumeStart").onclick = () => { $("readResume").classList.add("hidden"); loadChapter(start, 0, false); };
-    } else {
-      loadChapter(start, 0, false);
-    }
-  }).catch(() => loadChapter(start, 0, false));
+  // Offer to resume where you left off (same as file mode, via the shared helper). Saved
+  // progress further along than the opened chapter shows a Continue banner; otherwise start here.
+  getProgress(R.bookKey).then((prog) => showResume(prog, start)).catch(() => loadChapter(start, 0, false));
 }
 
 // Re-fetch the current (and future) chapters — used when the translation service
@@ -792,7 +837,7 @@ export function initRead() {
   $("ttsHighlight").addEventListener("change", (e) => { R.hl = e.target.checked; highlight(R.segIndex, false); saveReaderPrefs(); });
   if ($("ttsSymbols")) $("ttsSymbols").addEventListener("change", (e) => { R.readSymbols = e.target.checked; saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); });
   if ($("ttsAutoNext")) $("ttsAutoNext").addEventListener("change", (e) => { R.autoNext = e.target.checked; saveReaderPrefs(); });
-  $("ttsCollapse").addEventListener("click", () => { R.collapsed = !R.collapsed; $("ttsPlayer").classList.toggle("collapsed", R.collapsed); $("ttsCollapse").textContent = R.collapsed ? "▸" : "▾"; saveReaderPrefs(); });
+  $("ttsCollapse").addEventListener("click", () => { R.collapsed = !R.collapsed; applyPlayerPos(); saveReaderPrefs(); }); // applyPlayerPos re-clamps the new size into view
   initDrag();
 
   // restore saved player prefs
@@ -881,10 +926,11 @@ export function initRead() {
   });
 
   // Auto-hide chrome on scroll (down hides, up shows); ignores TTS-follow scrolls.
-  window.addEventListener("scroll", () => { updateNavPin(); if (!$("modeRead").hidden) onReaderScroll(); }, { passive: true });
+  window.addEventListener("scroll", () => { updateNavPin(); updateReadTop(); if (!$("modeRead").hidden) onReaderScroll(); }, { passive: true });
+  if ($("readTop")) $("readTop").addEventListener("click", () => { markProgScroll(); window.scrollTo({ top: 0, behavior: "smooth" }); setImmersive(false); });
   // Re-dock the floating player when the viewport crosses the mobile/desktop threshold
   // (rotation, window resize, DevTools device mode) so it never ends up off-screen.
-  window.addEventListener("resize", () => { try { applyPlayerPos(); } catch (_) {} updateNavPin(); });
+  window.addEventListener("resize", () => { try { applyPlayerPos(); } catch (_) {} updateNavPin(); updateReadTop(); });
 
   if (typeof synth !== "undefined" && synth) synth.onvoiceschanged = loadVoices;
 

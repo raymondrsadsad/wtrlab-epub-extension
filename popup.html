@@ -268,6 +268,7 @@
         </div>
       </section>
 
+      <button id="readTop" class="read-top hidden" type="button" title="Back to top" aria-label="Back to top">↑</button>
       <div id="ttsPlayer" class="tts-player hidden">
         <div id="ttsDrag" class="tts-bar">
           <span class="tts-grip" title="Drag to move">⠿</span>
@@ -431,6 +432,14 @@
             <option value="tl">Filipino</option>
           </select>
         </div>
+        <div class="row" id="webOffRow" hidden>
+          <span class="rowlbl">Turned off on</span>
+          <div class="optcol">
+            <span class="import-info">Sites where you pressed ✕ on the widget. It stays hidden there (page-zoom still works) until you turn it back on.</span>
+            <div id="webOffList" class="optcol"></div>
+            <div class="glossary-actions"><button id="webOffClear" type="button" class="sm">Turn back on everywhere</button></div>
+          </div>
+        </div>
 
         <details id="txEngineBox" class="glossary-box">
           <summary>⚙️ Translation engine (advanced)</summary>
@@ -444,6 +453,11 @@
                 <option value="openai">OpenAI-compatible (LLM)</option>
               </select>
             </div>
+            <div id="txGoogleFields" class="hidden">
+              <span class="import-info">Advanced: only needed if the built-in free translator ever stops working. Leave blank to use the defaults.</span>
+              <div class="row"><label for="txGKey">Google key</label><input id="txGKey" type="password" placeholder="(leave blank for built-in)" /></div>
+              <div class="row"><label for="txGEndpoint">Google endpoint</label><input id="txGEndpoint" type="text" placeholder="(leave blank for default)" /></div>
+            </div>
             <div id="txFields" class="hidden">
               <div class="row"><label for="txKey">API key</label><input id="txKey" type="password" placeholder="Your API key" /></div>
               <div class="row"><label for="txEndpoint">Endpoint</label><input id="txEndpoint" type="text" placeholder="(leave blank for default)" /></div>
@@ -451,6 +465,7 @@
             </div>
             <div class="glossary-actions">
               <button id="txSave" type="button" class="primary sm">Save engine</button>
+              <button id="txClearCache" type="button" class="sm">Clear translation cache</button>
               <span id="txInfo" class="import-info"></span>
             </div>
           </div>
@@ -510,6 +525,8 @@
     </div>
   </div>
 
+  <!-- Classic script: exposes globalThis.WRLayout (shared widget geometry) for the self-test. -->
+  <script src="adapters/layout.js"></script>
   <script type="module" src="popup.js"></script>
 </body>
 </html>

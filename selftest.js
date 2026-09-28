@@ -7,7 +7,7 @@
 import { buildEpub } from "./epub.js";
 import { parseEpub } from "./epubread.js";
 import { pickAdapter, adapterById } from "./adapters/registry.js";
-import { applyGlossary, htmlUnescape, translateAll } from "./adapters/translate.js";
+import { applyGlossary, htmlUnescape, translateAll, parseGtx, makeMemo, memoKey } from "./adapters/translate.js";
 
 // ---- tiny assert helpers ----
 function assert(cond, msg) { if (!cond) throw new Error(msg || "assertion failed"); }
@@ -116,6 +116,48 @@ const TESTS = [
     eq(htmlUnescape("A &amp; B &#39;C&#39; &#x2764;"), "A & B 'C' ❤", "named, decimal and hex entities");
     eq(htmlUnescape("plain text"), "plain text", "text without entities is untouched");
     return "HTML entities from the translator decode correctly";
+  },
+
+  async function gtxFallbackParse() {
+    eq(parseGtx([[["Hello, ", "x"], ["world", "y"]]]), "Hello, world", "joins the translated halves of gtx segments");
+    eq(parseGtx([[]]), "", "empty segment list → empty string");
+    assert(parseGtx(null) === null && parseGtx([1]) === null, "malformed response → null (so the caller keeps the source)");
+    return "the keyless Google fallback response parses into text";
+  },
+
+  async function translationCacheLru() {
+    const m = makeMemo(3);
+    m.set("a", "1"); m.set("b", "2"); m.set("c", "3");
+    eq(m.get("a"), "1", "cache hit"); // touches "a" so it's now most-recently-used
+    m.set("d", "4");                   // over the cap of 3 → evict the least-recently-used ("b")
+    eq(m.get("b"), undefined, "least-recently-used entry evicted");
+    eq(m.get("a"), "1", "recently-used entry survives eviction");
+    assert(memoKey("google", "auto", "en", "x") !== memoKey("google", "auto", "fr", "x"), "target language is part of the key");
+    assert(memoKey("google", "auto", "en", "x") !== memoKey("openai", "auto", "en", "x"), "engine mode is part of the key");
+    return "translation cache memoizes, evicts LRU, and keys by engine + languages";
+  },
+
+  async function xmlAttrEscaping() {
+    // A language tag full of XML-significant characters must be escaped in every attribute/element
+    // it's interpolated into, or the packaged OPF/XHTML is malformed and won't re-open.
+    const meta = { title: "Esc", author: "A", language: `en" & <x>`, idSeed: "esc-attrs", cover: { data: PNG_1x1, mime: "image/png", ext: "png" } };
+    const chapters = [{ title: "C1", xhtmlBody: "<p>ok</p>", srcNo: "1", srcUrl: "https://example.com/1" }];
+    const parsed = await parseEpub(await buildEpub(meta, chapters, []).arrayBuffer());
+    eq(parsed.count, 1, "book still packs & re-parses with a tricky language tag");
+    eq(parsed.chapters[0].title, "C1", "chapter intact despite the bad language value");
+    return "XML-significant characters in metadata don't corrupt the EPUB";
+  },
+
+  async function layoutGeometry() {
+    const L = globalThis.WRLayout;
+    assert(L && L.cornerAnchor && L.clampCorner, "WRLayout (shared widget geometry) is loaded");
+    const tl = L.cornerAnchor({ left: 4, top: 4, right: 184, bottom: 48, width: 180, height: 44 }, 1000, 1000, 8);
+    eq(tl.ax + "/" + tl.ay, "left/top", "a rect near the top-left anchors to that corner");
+    const br = L.cornerAnchor({ left: 800, top: 900, right: 980, bottom: 944, width: 180, height: 44 }, 1000, 1000, 8);
+    eq(br.ax + "/" + br.ay, "right/bottom", "a rect near the bottom-right anchors to that corner");
+    const c = L.clampCorner(950, 950, 300, 500, 1000, 1000, 8);
+    assert(c.x <= 1000 - 300 - 8 && c.y <= 1000 - 500 - 8, "an oversized panel is pulled fully on-screen");
+    return "corner anchoring + clamp keep the floating widget on-screen";
   },
 ];
 

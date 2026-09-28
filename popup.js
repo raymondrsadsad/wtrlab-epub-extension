@@ -101,35 +101,46 @@ function dedupeRecent(list) {
 
 // Recent novels list (newest first, capped). Also feeds the Library shelf, so it keeps
 // cover + author and holds more entries; the dropdown still shows just the newest few.
+// Serialize read-modify-write on chrome.storage.local: a later call's get could otherwise
+// resolve before an earlier call's set lands, clobbering the earlier write. `mutate(obj)` gets
+// the current stored values and returns the patch object to set (or a falsy value to skip);
+// `done(patch)` runs after the set. All RMW helpers below go through this single queue.
+let _writeChain = Promise.resolve();
+function updateStored(keys, mutate, done) {
+  if (!store) return Promise.resolve();
+  _writeChain = _writeChain.then(() => new Promise((resolve) => {
+    let settled = false;
+    const finish = (patch) => { if (settled) return; settled = true; resolve(); if (done) { try { done(patch); } catch (_) {} } };
+    try {
+      store.get(keys, (o) => {
+        let patch; try { patch = mutate(o || {}); } catch (_) { return finish(null); }
+        if (!patch) return finish(null);
+        try { store.set(patch, () => finish(patch)); } catch (_) { finish(null); }
+      });
+    } catch (_) { finish(null); }
+  }));
+  return _writeChain;
+}
 function addRecent(url, title, cover, author) {
   if (!store || !url) return;
   const cu = canonUrl(url);
-  try {
-    store.get("recent", (o) => {
-      let list = (o && Array.isArray(o.recent)) ? o.recent : [];
-      const prev = list.find((r) => r && canonUrl(r.url) === cu);
-      list = list.filter((r) => r && canonUrl(r.url) !== cu);
-      list.unshift({ url: cu, title: title || (prev && prev.title) || cu, cover: cover || (prev && prev.cover) || "", author: author || (prev && prev.author) || "", ts: Date.now() });
-      list = dedupeRecent(list).slice(0, 50);
-      store.set({ recent: list });
-      renderRecent(list);
-      if (currentMode === "library") renderLibrary();
-    });
-  } catch (e) { /* ignore */ }
+  updateStored("recent", (o) => {
+    let list = (o && Array.isArray(o.recent)) ? o.recent : [];
+    const prev = list.find((r) => r && canonUrl(r.url) === cu);
+    list = list.filter((r) => r && canonUrl(r.url) !== cu);
+    list.unshift({ url: cu, title: title || (prev && prev.title) || cu, cover: cover || (prev && prev.cover) || "", author: author || (prev && prev.author) || "", ts: Date.now() });
+    list = dedupeRecent(list).slice(0, 50);
+    return { recent: list };
+  }, (patch) => { if (patch) { renderRecent(patch.recent); if (currentMode === "library") renderLibrary(); } });
 }
 // Remove a single recent novel by url.
 function removeRecent(url) {
   if (!store || !url) return;
   const cu = canonUrl(url);
-  try {
-    store.get("recent", (o) => {
-      let list = (o && Array.isArray(o.recent)) ? o.recent : [];
-      list = list.filter((r) => r && canonUrl(r.url) !== cu);
-      store.set({ recent: list });
-      renderRecent(list);
-      if (currentMode === "library") renderLibrary();
-    });
-  } catch (e) { /* ignore */ }
+  updateStored("recent", (o) => {
+    const list = ((o && Array.isArray(o.recent)) ? o.recent : []).filter((r) => r && canonUrl(r.url) !== cu);
+    return { recent: list };
+  }, (patch) => { if (patch) { renderRecent(patch.recent); if (currentMode === "library") renderLibrary(); } });
 }
 // Open/close the recent dropdown panel.
 function setRecentOpen(open) {
@@ -234,9 +245,7 @@ function renderGlossaryRows(list) {
 }
 function saveGlossary() {
   if (!store) return;
-  const rows = Array.from(document.querySelectorAll("#glossaryRows .glossary-row"));
-  const list = rows.map((r) => ({ from: r.querySelector(".gl-from").value.trim(), to: r.querySelector(".gl-to").value }))
-    .filter((p) => p.from);
+  const list = rowsToList();
   const k = glossaryScopeKey();
   if (list.length) curGlossaries[k] = list; else delete curGlossaries[k];
   try { store.set({ glossaries: curGlossaries }); } catch (e) {}
@@ -364,30 +373,27 @@ function loadLibraryData(cb) {
 function toggleFollow(r) {
   if (!store) return;
   const u = canonUrl(r.url);
-  try {
-    store.get(["follows", "counts"], (o) => {
-      const follows = (o && o.follows) || {};
-      const counts = (o && o.counts) || {};
-      if (follows[u]) delete follows[u];
-      else follows[u] = { url: u, title: r.title || u, lastCount: counts[u] || 0, newCount: 0, lastCheck: 0 };
-      curFollows = follows;
-      store.set({ follows });
-      if (currentMode === "library") renderLibrary();
-    });
-  } catch (e) { /* ignore */ }
+  updateStored(["follows", "counts"], (o) => {
+    const follows = (o && o.follows) || {};
+    const counts = (o && o.counts) || {};
+    if (follows[u]) delete follows[u];
+    else follows[u] = { url: u, title: r.title || u, lastCount: counts[u] || 0, newCount: 0, lastCheck: 0 };
+    curFollows = follows;
+    return { follows };
+  }, () => { if (currentMode === "library") renderLibrary(); });
 }
 // Clear the "N new" badge for a followed novel once you actually open it.
 function resetFollowNew(url) {
   if (!store || !url) return;
   const cu = canonUrl(url);
-  try { store.get("follows", (o) => { const f = (o && o.follows) || {}; if (f[cu] && f[cu].newCount) { f[cu].newCount = 0; store.set({ follows: f }); } }); } catch (e) {}
+  updateStored("follows", (o) => { const f = (o && o.follows) || {}; if (!(f[cu] && f[cu].newCount)) return null; f[cu].newCount = 0; return { follows: f }; });
 }
 // After a pack, move a followed novel's baseline up so the count that was just captured
 // isn't re-reported as "new".
 function updateFollowBaseline(url, count) {
   if (!store || !url) return;
   const cu = canonUrl(url);
-  try { store.get("follows", (o) => { const f = (o && o.follows) || {}; if (f[cu]) { f[cu].lastCount = count; f[cu].newCount = 0; store.set({ follows: f }); } }); } catch (e) {}
+  updateStored("follows", (o) => { const f = (o && o.follows) || {}; if (!f[cu]) return null; f[cu].lastCount = count; f[cu].newCount = 0; return { follows: f }; });
 }
 function renderLibrary() {
   const wrap = $("libraryList");
@@ -732,8 +738,9 @@ async function analyse() {
     if ($("glossaryBox")) $("glossaryBox").classList.remove("hidden");
     loadGlossaries(() => { setGlossary(mergedGlossary(S.currentUrl)); renderGlossaryRows(currentGlossaryList()); });
     resetFollowNew(S.currentUrl); // opening it clears its "new chapters" badge
-    // new-chapter detection vs. the count at last pack of this novel
-    const prev = S.counts[url];
+    // new-chapter detection vs. the count at last pack of this novel (canonical key — the
+    // Library and follow-checks use canonUrl too, so raw vs canonical must not diverge here)
+    const prev = S.counts[canonUrl(url)];
     if (prev != null && S.chapters.length > prev) {
       S.newFrom = prev; // 0-based: chapters from this index on are new
       $("selNew").classList.remove("hidden");
@@ -746,6 +753,7 @@ async function analyse() {
   } catch (e) {
     console.error(e);
     setStatus("Analyse failed: " + e.message);
+    if ($("pack")) $("pack").disabled = true; // don't let Pack run against a stale/failed queue
   } finally {
     $("analyse").disabled = false;
   }
@@ -1214,11 +1222,15 @@ function txEngineFromFields() {
   return { mode,
     key: ($("txKey") && $("txKey").value.trim()) || "",
     endpoint: ($("txEndpoint") && $("txEndpoint").value.trim()) || "",
-    model: ($("txModel") && $("txModel").value.trim()) || "" };
+    model: ($("txModel") && $("txModel").value.trim()) || "",
+    // Optional override for the built-in Google translator (recoverable if the baked-in key dies).
+    gkey: ($("txGKey") && $("txGKey").value.trim()) || "",
+    gendpoint: ($("txGEndpoint") && $("txGEndpoint").value.trim()) || "" };
 }
 function updateTxFieldsUI() {
   const mode = $("txMode") ? $("txMode").value : "google";
   if ($("txFields")) $("txFields").classList.toggle("hidden", mode === "google");
+  if ($("txGoogleFields")) $("txGoogleFields").classList.toggle("hidden", mode !== "google");
   if ($("txModelRow")) $("txModelRow").classList.toggle("hidden", mode !== "openai");
   if ($("txEndpoint")) $("txEndpoint").placeholder = mode === "deepl" ? "(default: api-free.deepl.com/v2/translate)"
     : mode === "openai" ? "(default: api.openai.com/v1/chat/completions)" : "";
@@ -1232,9 +1244,58 @@ function loadTxEngine() {
       if ($("txKey")) $("txKey").value = e.key || "";
       if ($("txEndpoint")) $("txEndpoint").value = e.endpoint || "";
       if ($("txModel")) $("txModel").value = e.model || "";
+      if ($("txGKey")) $("txGKey").value = e.gkey || "";
+      if ($("txGEndpoint")) $("txGEndpoint").value = e.gendpoint || "";
       updateTxFieldsUI();
     });
   } catch (e) { /* ignore */ }
+}
+// Clear the persisted translation cache and tell the service worker to drop its in-memory copy.
+function clearTxCache() {
+  try { store && store.set({ txCache: [] }); } catch (_) {}
+  try { chrome.runtime && chrome.runtime.sendMessage({ type: "TX_CACHE_CLEAR" }, () => void chrome.runtime.lastError); } catch (_) {}
+  const info = $("txInfo");
+  if (info) { info.textContent = "Translation cache cleared."; setTimeout(() => { if (info) info.textContent = ""; }, 2500); }
+}
+// Render the list of sites the widget was turned off on (✕), with per-row + clear-all re-enable.
+function renderOffSites() {
+  if (!store || !$("webOffList")) return;
+  try {
+    store.get("webWidget", (o) => {
+      const cfg = (o && o.webWidget) || {};
+      const hosts = Object.keys(cfg.offHosts || {}).filter((h) => cfg.offHosts[h]).sort();
+      const row = $("webOffRow"); if (row) row.hidden = hosts.length === 0;
+      const list = $("webOffList"); if (!list) return;
+      list.textContent = "";
+      for (const h of hosts) {
+        const item = document.createElement("label"); item.className = "opt";
+        const b = document.createElement("button"); b.type = "button"; b.className = "sm"; b.textContent = "✕"; b.title = "Turn back on for " + h;
+        b.addEventListener("click", () => removeOffSite(h));
+        const span = document.createElement("span"); span.textContent = " " + h;
+        item.appendChild(b); item.appendChild(span); list.appendChild(item);
+      }
+    });
+  } catch (_) { /* ignore */ }
+}
+function removeOffSite(host) {
+  if (!store) return;
+  try {
+    store.get("webWidget", (o) => {
+      const cfg = (o && o.webWidget) || {};
+      if (cfg.offHosts) delete cfg.offHosts[host];
+      store.set({ webWidget: cfg }, () => renderOffSites());
+    });
+  } catch (_) { /* ignore */ }
+}
+function clearOffSites() {
+  if (!store) return;
+  try {
+    store.get("webWidget", (o) => {
+      const cfg = (o && o.webWidget) || {};
+      cfg.offHosts = {};
+      store.set({ webWidget: cfg }, () => renderOffSites());
+    });
+  } catch (_) { /* ignore */ }
 }
 function saveTxEngine() {
   if (!store) return;
@@ -1578,6 +1639,7 @@ async function finishPack() {
   if (includeCover && coverUrl) {
     try {
       const res = await fetchT(coverUrl, { credentials: "include" });
+      if (!res.ok) throw new Error("cover HTTP " + res.status); // don't embed a 404/error page as the cover
       const blob = await res.blob();
       cover = { data: new Uint8Array(await blob.arrayBuffer()), mime: blob.type || "image/jpeg", ext: extFromMime(blob.type || "image/jpeg") };
     } catch (e) { console.warn("cover failed", e); }
@@ -1613,7 +1675,15 @@ async function finishPack() {
     includeTitlePage,
     idSeed: S.currentUrl || null,
   };
-  const blob = buildEpub(meta, chapters, images);
+  let blob;
+  try {
+    blob = buildEpub(meta, chapters, images);
+  } catch (e) {
+    console.error("buildEpub failed", e);
+    setStatus("Build failed: " + ((e && e.message) || "packaging error") + " — nothing was downloaded.");
+    $("pack").disabled = false;
+    return; // leave S.lastBlob unset so no broken Download is offered
+  }
   const fname = sanitizeName($("filename").value) + ".epub";
   // Sanity-check the built file by reading it back before we offer Download: catches a
   // packaging regression (wrong chapter count, missing metadata) instead of shipping a
@@ -1637,7 +1707,7 @@ async function finishPack() {
   clearResume(); // this run is complete
   // record the chapter count so a later analyse can flag newly-released chapters
   if (store && S.currentUrl) {
-    S.counts[S.currentUrl] = S.chapters.length;
+    S.counts[canonUrl(S.currentUrl)] = S.chapters.length;
     try { store.set({ counts: S.counts }); } catch (e) {}
     updateFollowBaseline(S.currentUrl, S.chapters.length);
   }
@@ -1711,6 +1781,8 @@ function loadPrefsAndResume() {
                    : (typeof p.frontMatter === "boolean" ? p.frontMatter : true);
           if ($("includeTitlePage")) $("includeTitlePage").checked = tp;
           applyTheme(p.theme === "light" ? "light" : "dark");
+        } else {
+          applyTheme("dark"); // first run: set the attribute so the theme toggle flips correctly
         }
         if (o && Array.isArray(o.recent)) {
           const deduped = dedupeRecent(o.recent);
@@ -1810,8 +1882,10 @@ function captchaUrl() {
 
 // ---------- wire up ----------
 async function init() {
-  // Remember our own tab so we can return focus here after a CAPTCHA solve.
-  chrome.tabs.getCurrent((t) => { if (t) { toolTabId = t.id; toolWinId = t.windowId; } });
+  // Remember our own tab so we can return focus here after a CAPTCHA solve. Guarded: on limited
+  // runtimes (e.g. Android) chrome.tabs may be absent, and an unguarded throw here would abort
+  // init() before any listeners below get wired, leaving a dead popup.
+  try { if (chrome.tabs && chrome.tabs.getCurrent) chrome.tabs.getCurrent((t) => { if (t) { toolTabId = t.id; toolWinId = t.windowId; } }); } catch (_) {}
 
   // Hosts we auto-analyse on when the extension is opened from one of their pages.
   const AUTO_HOSTS = ["wtr-lab.com", "genesistudio.com", "kakuyomu.jp"];
@@ -1864,8 +1938,13 @@ async function init() {
   if ($("webUnlockZoom")) $("webUnlockZoom").addEventListener("change", saveWebWidgetPrefs);
   if ($("webLang")) $("webLang").addEventListener("change", saveWebWidgetPrefs);
   loadWebWidgetPrefs();
+  if ($("webOffClear")) $("webOffClear").addEventListener("click", clearOffSites);
+  renderOffSites();
+  // Refresh the off-list live if the widget's ✕ adds a site while this page is open.
+  try { if (chrome.storage && chrome.storage.onChanged) chrome.storage.onChanged.addListener((c, area) => { if (area === "local" && c.webWidget) renderOffSites(); }); } catch (_) {}
   if ($("txMode")) $("txMode").addEventListener("change", updateTxFieldsUI);
   if ($("txSave")) $("txSave").addEventListener("click", saveTxEngine);
+  if ($("txClearCache")) $("txClearCache").addEventListener("click", clearTxCache);
   loadTxEngine();
   $("pack").addEventListener("click", startPack);
   $("stop").addEventListener("click", () => { S.cancel = true; setStatus("Stopping…"); });
@@ -1981,4 +2060,4 @@ async function init() {
   // Opened the extension while on wtr-lab → force novel mode and analyse right away.
   else if (autoAnalyse) { setMode("novel"); analyse(); }
 }
-init();
+init().catch((e) => { try { console.error("popup init failed", e); setStatus("Something went wrong starting up: " + ((e && e.message) || e)); } catch (_) {} });

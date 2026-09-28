@@ -25,10 +25,15 @@ async function unzip(buf) {
   // Locate the End Of Central Directory record (scan back from the end; the
   // trailing comment is at most 65535 bytes).
   const maxBack = Math.min(bytes.length, 65557);
-  let eocd = -1;
+  let eocd = -1, firstHit = -1;
   for (let i = bytes.length - 22; i >= bytes.length - maxBack && i >= 0; i--) {
-    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    if (dv.getUint32(i, true) !== 0x06054b50) continue;
+    if (firstHit < 0) firstHit = i;
+    // A real EOCD's comment length exactly accounts for the remaining bytes; prefer that record
+    // so a 0x06054b50 that happens to occur inside the archive payload isn't mistaken for it.
+    if (i + 22 + dv.getUint16(i + 20, true) === bytes.length) { eocd = i; break; }
   }
+  if (eocd < 0) eocd = firstHit; // no exact match — fall back to the first signature found
   if (eocd < 0) throw new Error("Not a ZIP/EPUB (no end-of-directory record).");
 
   const count = dv.getUint16(eocd + 10, true);
@@ -43,7 +48,7 @@ async function unzip(buf) {
     const extraLen = dv.getUint16(ptr + 30, true);
     const commentLen = dv.getUint16(ptr + 32, true);
     const localOff = dv.getUint32(ptr + 42, true);
-    const name = new TextDecoder().decode(bytes.subarray(ptr + 46, ptr + 46 + nameLen));
+    const name = td.decode(bytes.subarray(ptr + 46, ptr + 46 + nameLen));
 
     // Read the local header to find where the entry's data actually begins.
     const lNameLen = dv.getUint16(localOff + 26, true);
@@ -72,6 +77,9 @@ function textOf(map, name) {
 
 // Resolve an href relative to a base directory (e.g. "OEBPS/"), collapsing "../".
 function resolvePath(baseDir, href) {
+  // OPF/XHTML hrefs may be percent-encoded (e.g. "images/my%20cover.jpg") while zip entry names
+  // are literal bytes — decode so the lookup matches. Bad escapes are left as-is.
+  try { href = decodeURIComponent(href); } catch (_) {}
   const parts = (baseDir + href).split("/");
   const stack = [];
   for (const p of parts) {
@@ -97,7 +105,9 @@ function extFromName(name) {
 
 const baseName = (p) => p.split("/").pop() || p;
 const isChapterFile = (p) => /^chapter-[^/]*\.xhtml$/i.test(baseName(p));
-const isFrontMatter = (p) => /^(cover|title|nav|toc)\b/i.test(baseName(p));
+// The exact front-matter files we generate (stem + extension only), so a real chapter like
+// "title-of-book-1.xhtml" isn't wrongly excluded on the fallback path.
+const isFrontMatter = (p) => /^(cover|title|nav|toc)\.[a-z0-9]+$/i.test(baseName(p));
 
 /**
  * Parse an EPUB ArrayBuffer.
@@ -223,7 +233,7 @@ export async function parseEpub(arrayBuffer, { nsPrefix = "" } = {}) {
       let rec = imgByPath.get(ipath);
       if (!rec) {
         const data = map.get(ipath);
-        if (!data) return; // referenced image not in the archive — drop the ref
+        if (!data) { img.remove(); return; } // referenced image not in the archive — drop the element (no dangling src)
         imgN++;
         const ext = extFromName(ipath);
         rec = { id: `${nsPrefix}imp${imgN}`, name: `images/${nsPrefix}imp${imgN}.${ext}`, mime: mimeFromName(ipath), data, imported: true };

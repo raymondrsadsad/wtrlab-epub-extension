@@ -353,6 +353,19 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 .tts-grip { color: var(--muted-2); font-size: 14px; }
 .tts-now { flex: 1; min-width: 60px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tts-player .icon-btn { padding: 0 4px; font-size: 15px; }
+/* Floating "back to top" button — shown once you've scrolled the reader down a screenful. */
+.read-top {
+  position: fixed; right: 20px; bottom: 88px; z-index: 61;
+  width: 44px; height: 44px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid var(--border-strong);
+  background: var(--accent); color: #fff;
+  font-size: 20px; line-height: 1; cursor: pointer;
+  box-shadow: var(--shadow); opacity: .9;
+  transition: opacity .15s, transform .1s;
+}
+.read-top:hover { opacity: 1; background: var(--accent-2); }
+.read-top:active { transform: translateY(1px); }
 .tts-body { padding: 10px; display: flex; flex-direction: column; gap: 9px; }
 .tts-row { display: flex; align-items: center; gap: 8px; }
 .tts-row.wrap { flex-wrap: wrap; }

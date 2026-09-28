@@ -1,6 +1,10 @@
 // Shared Google translateHtml helper (used by the wtr-lab and generic adapters).
 const TRANSLATE = "https://translate-pa.googleapis.com/v1/translateHtml";
 const GKEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
+// Keyless fallback endpoint (the classic web-translate API). Used only when the primary
+// translateHtml endpoint above fails (outage / rate-limit / revoked key), so translation
+// keeps working with no key and nothing to maintain.
+const GTX = "https://translate.googleapis.com/translate_a/single";
 
 // Transient failures are common with the free Google endpoint: it intermittently returns
 // 502/503 and the network sometimes drops the request ("Failed to fetch"). Retry a few
@@ -125,10 +129,17 @@ function parseJsonArray(s) {
   return null;
 }
 
-async function translateGoogle(paras, to, from) {
-  const res = await fetchT(TRANSLATE, {
+// The Google key and endpoint are replaceable config: a user can override the baked-in key
+// (or point at a proxy) via txEngine.gkey / txEngine.gendpoint, so a revoked default key is
+// recoverable without a new build. Empty overrides fall back to the constants above.
+function googleKey() { const k = _engine && _engine.gkey && String(_engine.gkey).trim(); return k || GKEY; }
+function googleEndpoint() { const e = _engine && _engine.gendpoint && String(_engine.gendpoint).trim(); return e || TRANSLATE; }
+
+// Primary Google engine: the protobuf translateHtml endpoint (batch, keyed).
+async function googleHtml(paras, to, from) {
+  const res = await fetchT(googleEndpoint(), {
     method: "POST",
-    headers: { "content-type": "application/json+protobuf", "X-Goog-API-Key": GKEY },
+    headers: { "content-type": "application/json+protobuf", "X-Goog-API-Key": googleKey() },
     body: JSON.stringify([[paras, from, to], "te_lib"]),
   });
   if (!res.ok) throw new Error("translate HTTP " + res.status);
@@ -138,10 +149,42 @@ async function translateGoogle(paras, to, from) {
   // fallback: one at a time to preserve alignment
   if (paras.length > 1) {
     const out = [];
-    for (const p of paras) out.push((await translateGoogle([p], to, from))[0]);
+    for (const p of paras) out.push((await googleHtml([p], to, from))[0]);
     return out;
   }
   return list ? list.map(htmlUnescape) : paras;
+}
+
+// Parse the keyless gtx endpoint's response: [ [ [translated, orig, …], … ], … ].
+// The first element is the array of sentence segments; join their translated halves.
+export function parseGtx(j) {
+  if (!Array.isArray(j) || !Array.isArray(j[0])) return null;
+  return j[0].map((seg) => (Array.isArray(seg) && seg[0] != null ? seg[0] : "")).join("");
+}
+
+// Keyless fallback engine (one request per string; returns plain text, not HTML-escaped).
+async function googleGtx(paras, to, from) {
+  const out = [];
+  for (const p of paras) {
+    const u = GTX + "?client=gtx&dt=t&sl=" + encodeURIComponent(from || "auto") +
+      "&tl=" + encodeURIComponent(to || "en") + "&q=" + encodeURIComponent(p);
+    const res = await fetchT(u, { method: "GET" });
+    if (!res.ok) throw new Error("gtx HTTP " + res.status);
+    const t = parseGtx(await res.json());
+    out.push(t == null ? p : t);
+  }
+  return out;
+}
+
+// Default engine with a fallback chain: try the primary translateHtml endpoint, and only if
+// it fails (outage / rate-limit / bad key) drop to the keyless gtx endpoint. On both failing,
+// surface the primary error so callers see the real status (e.g. "translate HTTP 502").
+async function translateGoogle(paras, to, from) {
+  try { return await googleHtml(paras, to, from); }
+  catch (e) {
+    try { return await googleGtx(paras, to, from); }
+    catch (_) { throw e; }
+  }
 }
 
 async function translateDeepL(paras, to) {
@@ -179,10 +222,9 @@ async function translateOpenAI(paras, to) {
   return arr.map((x) => String(x == null ? "" : x));
 }
 
-// Raw translation (no glossary): configured engine, or relay to the service worker when
-// running inside a content script. Custom engines fall back to Google on any failure.
-async function translateBatchRaw(paras, to, from) {
-  if (typeof globalThis !== "undefined" && globalThis.__WR_TX_VIA_SW) return swTranslateBatch(paras, to, from);
+// Dispatch to the configured engine (no cache, no glossary). Custom engines fall back to
+// Google on any failure so a bad key never breaks translation.
+async function engineTranslate(paras, to, from) {
   const mode = _engine && _engine.mode;
   if (mode === "deepl" || mode === "openai") {
     try {
@@ -192,6 +234,84 @@ async function translateBatchRaw(paras, to, from) {
     } catch (e) { console.warn("[translate] custom engine failed — using Google:", (e && e.message) || e); }
   }
   return translateGoogle(paras, to, from);
+}
+
+// ---------- translation cache ----------
+// Per-string memo so re-visiting or re-toggling a chapter doesn't re-hit the network (which is
+// also what provoked the 502s under load). Keyed by engine mode + from + to + the RAW source
+// text (pre-glossary, so glossary edits never invalidate it). LRU-capped and persisted to
+// chrome.storage.local "txCache" (unlimitedStorage is granted). The cache lives wherever the
+// real fetch happens — the service worker for the widget, or the popup/reader directly.
+const CACHE_MAX = 5000;
+export function memoKey(mode, from, to, text) {
+  return (mode || "google") + "\u0001" + (from || "auto") + "\u0001" + (to || "en") + "\u0001" + text;
+}
+// Small LRU as a factory so the self-test can exercise it in isolation.
+export function makeMemo(max = CACHE_MAX) {
+  const m = new Map();
+  return {
+    get(k) { const v = m.get(k); if (v !== undefined) { m.delete(k); m.set(k, v); } return v; },
+    set(k, v) { if (m.has(k)) m.delete(k); m.set(k, v); if (m.size > max) m.delete(m.keys().next().value); },
+    get size() { return m.size; },
+    entries() { return [...m.entries()]; },
+    load(pairs) { if (Array.isArray(pairs)) for (const kv of pairs) if (Array.isArray(kv) && kv.length === 2) this.set(kv[0], kv[1]); },
+    clear() { m.clear(); },
+  };
+}
+const _cache = makeMemo();
+let _cacheLoaded = false, _cacheDirty = false, _flushTimer = null;
+function _txStore() { try { return (typeof chrome !== "undefined" && chrome.storage) ? chrome.storage.local : null; } catch (_) { return null; } }
+function loadCache() {
+  if (_cacheLoaded) return Promise.resolve();
+  _cacheLoaded = true;
+  return new Promise((res) => {
+    const st = _txStore(); if (!st) return res();
+    try { st.get("txCache", (o) => { try { _cache.load(o && o.txCache); } catch (_) {} res(); }); }
+    catch (_) { res(); }
+  });
+}
+function flushCache() {
+  _flushTimer = null;
+  if (!_cacheDirty) return;
+  _cacheDirty = false;
+  const st = _txStore(); if (!st) return;
+  try { st.set({ txCache: _cache.entries() }); } catch (_) {}
+}
+function scheduleFlush() {
+  _cacheDirty = true;
+  if (_flushTimer) return;
+  _flushTimer = setTimeout(flushCache, 2000);
+}
+export function clearCache() {
+  _cache.clear(); _cacheDirty = false;
+  const st = _txStore(); if (st) { try { st.set({ txCache: [] }); } catch (_) {} }
+}
+
+// Raw translation (no glossary): SW relay when inside a content script, otherwise a cache-first
+// engine call — only the uncached strings are sent to the network, in order.
+async function translateBatchRaw(paras, to, from) {
+  if (typeof globalThis !== "undefined" && globalThis.__WR_TX_VIA_SW) return swTranslateBatch(paras, to, from);
+  await loadCache();
+  const mode = (_engine && _engine.mode) || "google";
+  const out = new Array(paras.length);
+  const missIdx = [], missTexts = [];
+  for (let i = 0; i < paras.length; i++) {
+    const hit = _cache.get(memoKey(mode, from, to, paras[i]));
+    if (hit !== undefined) out[i] = hit;
+    else { missIdx.push(i); missTexts.push(paras[i]); }
+  }
+  if (missTexts.length) {
+    const got = await engineTranslate(missTexts, to, from);
+    for (let j = 0; j < missIdx.length; j++) {
+      const v = got[j];
+      out[missIdx[j]] = v == null ? missTexts[j] : v;
+      // Don't cache a no-op (engine returned the source unchanged — usually a failure path);
+      // caching it would poison the memo with untranslated text.
+      if (v != null && v !== missTexts[j]) _cache.set(memoKey(mode, from, to, missTexts[j]), v);
+    }
+    scheduleFlush();
+  }
+  return out;
 }
 
 export async function translateBatch(paras, to, from) {

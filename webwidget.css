@@ -209,6 +209,17 @@
   flex-direction: row; flex-wrap: wrap; align-items: center; gap: 12px;
   padding: 10px 16px;
 }
+/* Floating "back to top" button inside the reader overlay. */
+#wr-root .wr-ov-top {
+  position: absolute; right: 16px; bottom: 76px; z-index: 6;
+  width: 42px; height: 42px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid var(--wr-border);
+  background: var(--wr-accent); color: #fff;
+  font-size: 19px; line-height: 1; cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+}
+#wr-root .wr-ov-top:hover { background: var(--wr-accent2); }
 #wr-root .wr-ov-tts .wr-tts-row { flex: 0 0 auto; }
 #wr-root .wr-ov-tts .wr-field { flex: 1 1 160px; }
 

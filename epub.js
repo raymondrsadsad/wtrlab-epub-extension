@@ -182,7 +182,7 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
   if (wantCoverImage && meta.cover && meta.cover.data) {
     const cname = "images/cover." + (meta.cover.ext || "jpg");
     files.push({ name: "OEBPS/" + cname, data: meta.cover.data });
-    coverImageItem = `<item id="cover-image" href="${cname}" media-type="${meta.cover.mime || "image/jpeg"}" properties="cover-image"/>`;
+    coverImageItem = `<item id="cover-image" href="${xmlEscape(cname)}" media-type="${xmlEscape(meta.cover.mime || "image/jpeg")}" properties="cover-image"/>`;
     coverMeta = `<meta name="cover" content="cover-image"/>`;
     // A real cover page so the book opens on the cover — part of the front pages.
     if (wantFrontPages) {
@@ -190,9 +190,9 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
         name: "OEBPS/cover.xhtml",
         data: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${xmlEscape(lang)}">
 <head><meta charset="utf-8"/><title>Cover</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
-<body class="cover" epub:type="cover"><img src="${cname}" alt="Cover"/></body></html>`,
+<body class="cover" epub:type="cover"><img src="${xmlEscape(cname)}" alt="Cover"/></body></html>`,
       });
       coverPageItem = `<item id="coverpage" href="cover.xhtml" media-type="application/xhtml+xml"/>`;
       coverPageRef = `<itemref idref="coverpage"/>`;
@@ -207,7 +207,7 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
       name: "OEBPS/title.xhtml",
       data: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${xmlEscape(lang)}">
 <head><meta charset="utf-8"/><title>${xmlEscape(meta.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body class="titlepage" epub:type="titlepage"><h1 class="bt">${xmlEscape(meta.title)}</h1><p class="ba">${xmlEscape(meta.author || "Unknown")}</p>${descHtml}</body></html>`,
     });
@@ -219,7 +219,7 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
   const imageItems = [];
   for (const img of images) {
     files.push({ name: "OEBPS/" + img.name, data: img.data });
-    imageItems.push(`<item id="${img.id}" href="${img.name}" media-type="${img.mime}"/>`);
+    imageItems.push(`<item id="${xmlEscape(img.id)}" href="${xmlEscape(img.name)}" media-type="${xmlEscape(img.mime)}"/>`);
   }
 
   // chapter xhtml
@@ -238,7 +238,7 @@ img{max-width:100%;height:auto;display:block;margin:1.2em auto}
       (ch.srcUrl ? ` data-src-url="${xmlEscape(ch.srcUrl)}"` : "");
     const doc = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${xmlEscape(lang)}">
 <head><meta charset="utf-8"/><title>${xmlEscape(ch.title)}</title>
 <link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
@@ -257,7 +257,7 @@ ${ch.xhtmlBody}
     name: "OEBPS/nav.xhtml",
     data: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${lang}">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${xmlEscape(lang)}">
 <head><meta charset="utf-8"/><title>Contents</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body><nav epub:type="toc" id="toc"><h1>Contents</h1><ol>${navList.join("")}</ol></nav></body></html>`,
   });
@@ -280,7 +280,7 @@ ${ch.xhtmlBody}
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="BookId">${bookId}</dc:identifier>
     <dc:title>${xmlEscape(meta.title)}</dc:title>
-    <dc:language>${lang}</dc:language>
+    <dc:language>${xmlEscape(lang)}</dc:language>
     <dc:creator>${xmlEscape(meta.author || "Unknown")}</dc:creator>
     ${meta.description ? `<dc:description>${xmlEscape(meta.description)}</dc:description>` : ""}
     ${(meta.subjects || []).map((s) => `<dc:subject>${xmlEscape(s)}</dc:subject>`).join("\n    ")}

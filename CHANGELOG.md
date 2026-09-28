@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.17.0 — 2026-09-29
+
+### Added
+- **"Back to top" button in the reader.** Once you've scrolled down, a floating ↑ button appears
+  (bottom-right) in both the in-extension reader and the on-site reader overlay — tap it to jump
+  straight back to the top.
+- **Translation cache.** Translated text is remembered (per engine + language) and reused, so
+  revisiting a chapter or toggling Show original ↔ Translate is instant and doesn't re-hit the
+  network — which also avoids the rate-limiting that caused the 502s. Clear it any time from the
+  Web Reader tab → Translation engine → "Clear translation cache".
+- **Google translator is now recoverable.** If Google's primary endpoint fails, translation
+  automatically falls back to a second keyless endpoint; and the built-in key/endpoint can be
+  overridden in Web Reader → Translation engine (advanced) if the default ever stops working.
+- **Turn the floating widget off per-site.** The widget's ✕ now hides it for the current site
+  (page-zoom still works); re-enable specific sites, or all of them, from the Web Reader tab.
+
+### Fixed
+- **Reader mini-player no longer expands off-screen.** Docked at a screen edge, expanding it used
+  to run past the edge and need a second tap; it now opens fully in view on the first tap (it's
+  anchored to whichever corner it's nearest and grows inward — same fix as the on-site widget).
+- **More resilient text-to-speech and startup.** Books open even on browsers without a speech
+  engine; TTS auto-advances correctly if the final line errors; the popup no longer dies on limited
+  runtimes where `chrome.tabs` is unavailable.
+- **Sturdier saving & packaging.** Serialized the storage writes behind recent/library/follow/read
+  progress (no more clobbering under rapid changes); packaged EPUBs escape every metadata field
+  (language, image names, mime types) and won't embed a failed cover fetch; a build error now shows
+  a message instead of failing silently. Plus assorted smaller reader/EPUB-reader robustness fixes.
+
 ## 1.16.2 — 2026-09-29
 
 ### Changed

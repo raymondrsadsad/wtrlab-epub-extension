@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Novel to EPUB (wtr-lab & more)",
-  "version": "1.16.2",
+  "version": "1.17.0",
   "description": "Download novels as EPUB. Full wtr-lab support (Web / Web+ / AI translation, exact illustrations) plus a generic extractor for other sites.",
   "action": {
     "default_title": "Novel to EPUB",
@@ -28,6 +28,7 @@
         "<all_urls>"
       ],
       "js": [
+        "adapters/layout.js",
         "webwidget.js"
       ],
       "css": [

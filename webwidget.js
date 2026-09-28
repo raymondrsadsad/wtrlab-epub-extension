@@ -63,6 +63,9 @@
     // Page zoom: unlockZoom re-enables native pinch-zoom on sites that block it; zoomByHost is
     // a remembered CSS-zoom factor per hostname (set from the widget's Zoom control).
     unlockZoom: true, zoomByHost: {},
+    // Sites where the user pressed ✕ ("turn off on this site"): { hostname: true }. The widget
+    // still runs page-zoom/pinch-unlock there, but never mounts its UI. Re-enable from the popup.
+    offHosts: {},
     // Reader-mode overlay display settings (font / size / line-height / theme + advanced).
     ovTheme: "default", ovBg: "#ffffff", ovFg: "#111111", ovFont: "", ovImportedFont: null, ovSize: 18, ovLh: 1.7,
     ovWidth: 720, ovGap: 1.1, ovJustify: false, ovBold: false };
@@ -240,6 +243,8 @@
   }
 
   const zoomHost = () => { try { return location.hostname || ""; } catch (_) { return ""; } };
+  // The user turned the widget off on this site via ✕ (page-zoom/pinch still run; only the UI hides).
+  const hostOff = () => !!(CFG.offHosts && CFG.offHosts[zoomHost()]);
   const getZoom = () => {
     const z = CFG.zoomByHost && CFG.zoomByHost[zoomHost()];
     return (typeof z === "number" && isFinite(z) && z > 0) ? z : 1;
@@ -332,7 +337,7 @@
         <span class="wr-brand">🌐 Web Reader</span>
         <span class="wr-head-btns">
           <button class="wr-icon" data-act="collapse" title="Collapse to bubble">–</button>
-          <button class="wr-icon" data-act="close" title="Collapse to bubble">✕</button>
+          <button class="wr-icon" data-act="close" title="Turn off on this site">✕</button>
         </span>
       </div>
       <div class="wr-actions">
@@ -457,16 +462,10 @@
     if (ay === "top") { s.top = y + "px"; s.bottom = "auto"; } else { s.bottom = y + "px"; s.top = "auto"; }
   }
   // Choose the nearest corner from an element's viewport rect and store it as CFG.pos, clamped so
-  // the element stays on-screen. Used on drag-end and when migrating a legacy position.
+  // the element stays on-screen. Used on drag-end and when migrating a legacy position. The pure
+  // math lives in adapters/layout.js (WRLayout) so it can be unit-tested; this only touches DOM.
   function saveAnchorFromRect(rect) {
-    const vw = window.innerWidth, vh = window.innerHeight;
-    const ax = (rect.left + rect.width / 2) > vw / 2 ? "right" : "left";
-    const ay = (rect.top + rect.height / 2) > vh / 2 ? "bottom" : "top";
-    let x = ax === "left" ? rect.left : vw - rect.right;
-    let y = ay === "top" ? rect.top : vh - rect.bottom;
-    x = Math.max(EDGE, Math.min(x, vw - rect.width - EDGE));
-    y = Math.max(EDGE, Math.min(y, vh - rect.height - EDGE));
-    CFG.pos = { ax, ay, x, y };
+    CFG.pos = WRLayout.cornerAnchor(rect, window.innerWidth, window.innerHeight, EDGE);
   }
   // Place the expanded panel at the mini's corner, but clamp the offset to the panel's own size so
   // the larger box stays fully on-screen — WITHOUT changing CFG.pos, so the mini's saved spot (and
@@ -476,19 +475,15 @@
     const a = CFG.pos;
     if (!a || !a.ax) return; // default bottom-right corner already grows inward
     const w = W.panel.offsetWidth || 300, h = W.panel.offsetHeight || 300;
-    const x = Math.max(EDGE, Math.min(a.x, window.innerWidth - w - EDGE));
-    const y = Math.max(EDGE, Math.min(a.y, window.innerHeight - h - EDGE));
-    pinCorner(a.ax, a.ay, x, y);
+    const c = WRLayout.clampCorner(a.x, a.y, w, h, window.innerWidth, window.innerHeight, EDGE);
+    pinCorner(a.ax, a.ay, c.x, c.y);
   }
   // Keep the currently shown element on-screen (used for live drag, where the mini/panel is moved
   // by raw left/top). Uses the live rendered size and pins to a margin if it's bigger than the view.
   function clampXY(left, top) {
-    const m = EDGE;
     const rw = (W.root && W.root.offsetWidth) || 60;
     const rh = (W.root && W.root.offsetHeight) || 60;
-    const maxL = Math.max(m, window.innerWidth - rw - m);
-    const maxT = Math.max(m, window.innerHeight - rh - m);
-    return { left: Math.max(m, Math.min(maxL, left)), top: Math.max(m, Math.min(maxT, top)) };
+    return WRLayout.clampXY(left, top, rw, rh, window.innerWidth, window.innerHeight, EDGE);
   }
   // Re-assert position when the viewport changes (resize / rotate): the panel if it's open, else
   // the mini, both from the stored corner.
@@ -545,7 +540,12 @@
     const b = e.target.closest("[data-act]");
     if (!b) return;
     const act = b.dataset.act;
-    if (act === "collapse" || act === "close") return togglePanel(false); // collapse to bubble (never disable from the page)
+    if (act === "collapse") return togglePanel(false); // – : just collapse to the mini bubble
+    if (act === "close") { // ✕ : turn the widget off for this site (re-enable from the popup)
+      CFG.offHosts = CFG.offHosts || {}; CFG.offHosts[zoomHost()] = true; saveCfg();
+      destroy();
+      return;
+    }
     // Page zoom is a local DOM/storage operation — works even on a stale tab, so handle it
     // before the extension-context gate below.
     if (act === "zoom-in") return setZoom(getZoom() + 0.1);
@@ -1188,6 +1188,7 @@
         </span>
       </div>
       <div class="wr-ov-scroll"><article class="wr-ov-content"></article></div>
+      <button class="wr-ov-top wr-hidden" data-ov="top" title="Back to top" aria-label="Back to top">↑</button>
       <div class="wr-tts wr-ov-tts"></div>`;
     ov.querySelector(".wr-ov-title").textContent = (title || "Reading").replace(/\s+/g, " ").trim().slice(0, 120);
     const content = ov.querySelector(".wr-ov-content");
@@ -1212,6 +1213,12 @@
 
     ov.querySelector('[data-ov="close"]').addEventListener("click", closeReaderOverlay);
     ov.querySelector('[data-ov="display"]').addEventListener("click", toggleOvDisplay);
+    // Floating "back to top": show once the reader is scrolled down, jump to the top on tap.
+    const ovScroll = ov.querySelector(".wr-ov-scroll"), ovTop = ov.querySelector('[data-ov="top"]');
+    if (ovScroll && ovTop) {
+      ovScroll.addEventListener("scroll", () => ovTop.classList.toggle("wr-hidden", ovScroll.scrollTop < 400), { passive: true });
+      ovTop.addEventListener("click", () => ovScroll.scrollTo({ top: 0, behavior: "smooth" }));
+    }
     buildOvDisplay(ov);
     if (CFG.ovImportedFont && CFG.ovImportedFont.name && CFG.ovImportedFont.dataUrl) registerOvFont(CFG.ovImportedFont.name, CFG.ovImportedFont.dataUrl).then(applyOverlayDisplay);
     applyOverlayDisplay();
@@ -1266,7 +1273,7 @@
     if (W._spaTimer) return;
     W._spaTimer = setInterval(() => {
       // Re-assert the widget if the page (SPA re-render / hydration) removed our root.
-      if (CFG.enabled) {
+      if (CFG.enabled && !hostOff()) {
         if (!W.root) { build(); if (W.synth) loadVoices(); }
         else if (!document.documentElement.contains(W.root)) { document.documentElement.appendChild(W.root); }
       }
@@ -1279,7 +1286,7 @@
       loadGlossary(); // the novel (and thus its glossary) may have changed
       const orig = W.panel && W.panel.querySelector('[data-act="original"]');
       if (orig) { orig.disabled = true; orig.textContent = "Show original"; }
-      if (CFG.autoTranslate) setTimeout(() => translatePage(), 800);
+      if (CFG.autoTranslate && !hostOff()) setTimeout(() => translatePage(), 800);
     }, 1200);
   }
 
@@ -1288,7 +1295,7 @@
     loadGlossary();
     // Page zoom / pinch-zoom unlock runs on EVERY page, even when the widget UI is disabled.
     try { unlockViewport(); applyZoom(); startZoomWatch(); } catch (_) {}
-    if (!CFG.enabled) { watchEnableFlag(); return; }
+    if (!CFG.enabled || hostOff()) { watchEnableFlag(); return; } // off globally or on this site
     build();
     if (W.synth) { loadVoices(); W.synth.onvoiceschanged = loadVoices; }
     watchSpaNav();
@@ -1305,13 +1312,15 @@
       if (changes.glossaries) loadGlossary(); // keep term-lock in sync with the editor
       if (!changes.webWidget) return;
       const nv = changes.webWidget.newValue || {};
-      const wasEnabled = CFG.enabled;
       Object.assign(CFG, nv);
-      if (CFG.enabled && !wasEnabled && !W.root) {
+      // Recompute against BOTH the global flag and this site's off-list, so toggling either the
+      // global switch or the per-site entry (from the popup) mounts/unmounts live.
+      const shouldShow = CFG.enabled && !hostOff();
+      if (shouldShow && !W.root) {
         build();
         if (W.synth) { loadVoices(); W.synth.onvoiceschanged = loadVoices; }
         watchSpaNav();
-      } else if (!CFG.enabled && wasEnabled) {
+      } else if (!shouldShow && W.root) {
         destroy();
       }
     });

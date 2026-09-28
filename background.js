@@ -1,6 +1,6 @@
 // Opens the full-page UI in a new tab when the toolbar icon is clicked,
 // passing the current tab's URL so the UI can auto-fill the Starting URL.
-import { translateAll, translateBatch } from "./adapters/translate.js";
+import { translateAll, translateBatch, clearCache } from "./adapters/translate.js";
 
 if (chrome.action && chrome.action.onClicked) chrome.action.onClicked.addListener((tab) => {
   const src = tab && tab.url ? "?src=" + encodeURIComponent(tab.url) : "";
@@ -30,6 +30,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then((out) => sendResponse({ ok: true, out }))
       .catch((e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
     return true;
+  }
+
+  // Drop the service worker's in-memory translation cache (the popup also clears the persisted
+  // copy in chrome.storage). Keeps a "Clear translation cache" button honest across contexts.
+  if (msg.type === "TX_CACHE_CLEAR") {
+    try { clearCache(); } catch (_) {}
+    sendResponse({ ok: true });
+    return; // synchronous
   }
 
   if (msg.type === "OPEN_IN_READER") {
