@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.16.1 — 2026-09-29
+
+### Fixed
+- **Page zoom now works on full-width / mobile pages (e.g. comic sites on the tablet).** It
+  previously used CSS `zoom` on the page body, which is a no-op when the content fills the width
+  — the body just re-expands to fill the viewport, so zoom-out did nothing on comic readers like
+  asurascans (it only appeared to work on desktop, where the site's own layout is a fixed centred
+  column). Page zoom now constrains the body's width and centres it instead: zoom-out shrinks the
+  page and centres it with equal margins on both sides (like a webtoon column in the middle of the
+  screen), zoom-in grows it for panning, and it reflows correctly so long webtoons don't get a
+  huge blank scroll area. Any leftover CSS-zoom from older versions is cleared automatically.
+
 ## 1.16.0 — 2026-09-29
 
 ### Added

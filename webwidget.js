@@ -244,13 +244,34 @@
     const z = CFG.zoomByHost && CFG.zoomByHost[zoomHost()];
     return (typeof z === "number" && isFinite(z) && z > 0) ? z : 1;
   };
-  // Scale the page via CSS zoom on <body> — NOT documentElement — so the widget and reader
-  // overlay (both children of <html>, outside <body>) are never scaled with the page.
+  // Page zoom works by constraining <body>'s width to z×100vw and centering it — NOT with CSS
+  // `zoom`. CSS `zoom` is a no-op on full-width / mobile pages (the body just re-fills the
+  // viewport and full-width images re-fill the body, so nothing shrinks — this is why zoom-out
+  // did nothing on comic sites like asurascans on the tablet). Constraining the width instead:
+  //   • zoom-out (z<1): body shrinks and `margin: auto` centers it → equal side margins, like
+  //     a webtoon column in the middle of the screen; images inside shrink with it.
+  //   • zoom-in (z>1): body grows past the viewport → pan by scrolling.
+  // It reflows the page (correct scroll height), so long webtoons don't get a huge blank
+  // scroll area the way a `transform: scale()` would. We override the site's own width rules
+  // with !important. The widget/reader overlay live under <html> (outside <body>) so they're
+  // never scaled. A data-attr marks that WE own these props, so z===1 only clears our own.
+  const ZOOM_PROPS = ["width", "max-width", "min-width", "margin-left", "margin-right", "box-sizing"];
   function applyZoom() {
     const b = document.body; if (!b) return;
     const z = getZoom();
-    const want = z === 1 ? "" : String(z);
-    if (b.style.zoom !== want) b.style.zoom = want;
+    b.style.removeProperty("zoom"); // clear any legacy CSS-zoom left by older versions
+    if (z === 1) {
+      if (b.dataset.wrZoom != null) { for (const k of ZOOM_PROPS) b.style.removeProperty(k); delete b.dataset.wrZoom; }
+      updateZoomLabel();
+      return;
+    }
+    b.style.setProperty("width", (z * 100) + "vw", "important");
+    b.style.setProperty("max-width", "none", "important");
+    b.style.setProperty("min-width", "0", "important");
+    b.style.setProperty("margin-left", "auto", "important");
+    b.style.setProperty("margin-right", "auto", "important");
+    b.style.setProperty("box-sizing", "border-box", "important");
+    b.dataset.wrZoom = String(z);
     updateZoomLabel();
   }
   function setZoom(z) {
