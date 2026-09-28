@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.16.0 — 2026-09-29
+
+### Added
+- **Move the expanded Web Reader panel.** You can now drag the floating 🌐 panel by its
+  "Web Reader" header, not just the collapsed bubble. Collapse/Close still work (drag ignores
+  button clicks).
+
+### Fixed
+- **Translation shrugs off transient failures.** The free Google endpoint intermittently returns
+  `HTTP 502/503` and the network sometimes drops the request (`Failed to fetch`). Every batch now
+  retries up to 3× with exponential backoff + jitter before giving up, so a blip no longer fails
+  the whole page or an auto-translated chapter. Real errors (4xx) still fail fast. Applies to all
+  engines (Google / DeepL / OpenAI).
+- **Panel no longer overflows the screen edge.** Opening the panel while the bubble sat near the
+  right/bottom edge let it run off-screen. The widget now clamps itself fully into view when it
+  expands and on window resize/rotate, using its live size so the wide panel reserves the room the
+  small bubble doesn't.
+- **No more error spam after an extension update.** When the extension is reloaded while a page
+  stays open, the old content script's context is dead; the auto-translate observer used to log
+  "Extension was updated — reload this page…" on every DOM mutation. It now stops watching after
+  the first such failure (reload the page to use the Web Reader again).
+
 ## 1.15.0 — 2026-09-28
 
 ### Added

@@ -385,7 +385,13 @@
     if (pbar) { pbar.innerHTML = ttsBarHtml(); wireTtsBar(pbar); pbar.dataset.wired = "1"; pbar.classList.remove("wr-hidden"); }
 
     initDrag(mini);
+    // The expanded panel is draggable by its header too (the header already shows a move
+    // cursor). initDrag ignores clicks on buttons, so Collapse/Close still work.
+    const head = panel.querySelector(".wr-head");
+    if (head) initDrag(head);
     applyPos();
+    // Keep the widget on-screen when the viewport changes (resize / device rotate).
+    if (!W._resizeBound) { window.addEventListener("resize", clampIntoView); W._resizeBound = true; }
   }
 
   // While reading the live page in place, a click on one of the read paragraphs
@@ -409,6 +415,29 @@
     }
   }
 
+  // Keep the whole widget (whatever is currently shown — the mini pill OR the expanded
+  // panel) inside the viewport. Uses the live rendered size so the wide panel reserves room
+  // the small pill doesn't, and pins to a margin when it's larger than the viewport.
+  function clampXY(left, top) {
+    const m = 8;
+    const rw = (W.root && W.root.offsetWidth) || 60;
+    const rh = (W.root && W.root.offsetHeight) || 60;
+    const maxL = Math.max(m, window.innerWidth - rw - m);
+    const maxT = Math.max(m, window.innerHeight - rh - m);
+    return { left: Math.max(m, Math.min(maxL, left)), top: Math.max(m, Math.min(maxT, top)) };
+  }
+
+  // Re-clamp the current explicit position (only when the user has dragged; otherwise the
+  // default bottom-right CSS anchor keeps the panel on-screen on its own). Called after
+  // expanding and on window resize so a panel opened near an edge doesn't overflow.
+  function clampIntoView() {
+    if (!W.root || !CFG.pos || typeof CFG.pos.left !== "number") return;
+    const c = clampXY(CFG.pos.left, CFG.pos.top);
+    W.root.style.left = c.left + "px"; W.root.style.top = c.top + "px";
+    W.root.style.right = "auto"; W.root.style.bottom = "auto";
+    if (c.left !== CFG.pos.left || c.top !== CFG.pos.top) { CFG.pos = c; saveCfg(); }
+  }
+
   function initDrag(handle) {
     let sx = 0, sy = 0, ox = 0, oy = 0, drag = false, moved = false;
     handle.addEventListener("pointerdown", (e) => {
@@ -422,9 +451,7 @@
       if (!drag) return;
       const dx = e.clientX - sx, dy = e.clientY - sy;
       if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
-      let nx = ox + dx, ny = oy + dy;
-      nx = Math.max(4, Math.min(window.innerWidth - 60, nx));
-      ny = Math.max(4, Math.min(window.innerHeight - 60, ny));
+      const { left: nx, top: ny } = clampXY(ox + dx, oy + dy);
       W.root.style.left = nx + "px"; W.root.style.top = ny + "px";
       W.root.style.right = "auto"; W.root.style.bottom = "auto";
       CFG.pos = { left: nx, top: ny };
@@ -439,7 +466,10 @@
     const open = show != null ? show : W.panel.classList.contains("wr-hidden");
     W.panel.classList.toggle("wr-hidden", !open);
     W.mini.classList.toggle("wr-hidden", open);
-    if (open) updateZoomLabel();
+    // Re-clamp AFTER the panel is visible: it's now the wider element, so if the bubble was
+    // dragged near an edge the panel would otherwise overflow past it. clampIntoView measures
+    // the live size and nudges the widget back fully on-screen.
+    if (open) { updateZoomLabel(); clampIntoView(); }
   }
 
   function setStatus(t) { if (W.statusEl) W.statusEl.textContent = t; }
@@ -634,8 +664,16 @@
     W.txTimer = setTimeout(async () => {
       W.txTimer = null;
       if (!W.translated || W.showingOriginal || !W.txPending || !W.txPending.size) { W.txPending && W.txPending.clear(); return; }
+      // After an extension update the old content script's context is dead — every relay
+      // rejects with the reload message. Stop watching for good rather than logging that on
+      // every DOM mutation; the page must be reloaded to use the Web Reader again.
+      if (!extAlive()) { stopTxObserver(); return; }
       const batch = Array.from(W.txPending); W.txPending.clear();
-      try { await applyTranslationTo(batch); } catch (e) { console.warn("[WebReader] dynamic translate failed", e); }
+      try { await applyTranslationTo(batch); }
+      catch (e) {
+        if (e && String(e.message) === RELOAD_MSG) { stopTxObserver(); return; } // context died mid-flight
+        console.warn("[WebReader] dynamic translate failed", e);
+      }
     }, 400);
   }
   function startTxObserver() {

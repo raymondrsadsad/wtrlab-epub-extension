@@ -2,11 +2,29 @@
 const TRANSLATE = "https://translate-pa.googleapis.com/v1/translateHtml";
 const GKEY = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
 
-async function fetchT(url, opts = {}, ms = 30000) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), ms);
-  try { return await fetch(url, { ...opts, signal: ac.signal }); }
-  finally { clearTimeout(t); }
+// Transient failures are common with the free Google endpoint: it intermittently returns
+// 502/503 and the network sometimes drops the request ("Failed to fetch"). Retry a few
+// times with exponential backoff + jitter before giving up, so a blip doesn't fail the
+// whole page (or an auto-translated chapter). Non-transient errors (4xx) return/throw at once.
+function isTransientStatus(s) { return s === 408 || s === 425 || s === 429 || (s >= 500 && s <= 599); }
+async function fetchT(url, opts = {}, ms = 30000, tries = 3) {
+  let lastErr;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), ms);
+    try {
+      const res = await fetch(url, { ...opts, signal: ac.signal });
+      if (res.ok || !isTransientStatus(res.status) || attempt === tries - 1) return res;
+      lastErr = new Error("HTTP " + res.status);
+    } catch (e) {
+      lastErr = e;                       // network error / abort (timeout)
+      if (attempt === tries - 1) throw e;
+    } finally {
+      clearTimeout(t);
+    }
+    await new Promise((r) => setTimeout(r, 600 * (2 ** attempt) + Math.random() * 300));
+  }
+  throw lastErr;
 }
 
 // HTML entity decode (google translateHtml returns &#39; etc.). Uses a <textarea>
