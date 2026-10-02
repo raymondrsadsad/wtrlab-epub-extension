@@ -706,6 +706,39 @@
     const dup = raw.match(/^(.+?)\s+\1$/); if (dup) raw = dup[1].trim(); // "Foo Foo" -> "Foo"
     return raw.slice(0, 90);
   }
+  // Build an EPUB chapter body from ordered items ([{text}|{image}]), fetching each image.
+  // `prefix` namespaces image ids/names so a COMBINED book (many chapters) never collides.
+  // Returns { xhtmlBody, images:[{id,name,data,mime}] }.
+  async function buildChapterParts(items, prefix) {
+    const pre = prefix || "";
+    const parts = [], images = [];
+    let imgN = 0;
+    for (const it of items) {
+      if (it.text) { parts.push(`<p>${xesc(it.text)}</p>`); continue; }
+      if (it.image) {
+        try {
+          const r = await fetch(it.image, { credentials: "include" });
+          if (!r.ok) continue;
+          const buf = new Uint8Array(await r.arrayBuffer());
+          if (!buf.length) continue;
+          const mime = (r.headers.get("content-type") || "").split(";")[0] || "image/jpeg";
+          imgN++;
+          const name = `images/${pre}img${imgN}.${mimeToExt(mime)}`;
+          images.push({ id: `${pre}img${imgN}`, name, data: buf, mime });
+          parts.push(`<p><img src="${name}" alt=""/></p>`);
+        } catch (_) { /* skip an image that won't load */ }
+      }
+    }
+    return { xhtmlBody: parts.join("\n"), images };
+  }
+  function downloadBlob(blob, filename) {
+    const a = el("a"); a.href = URL.createObjectURL(blob); a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 15000);
+  }
+  function readerLang() {
+    return ((W.translated && !W.showingOriginal) || CFG.autoTranslate) ? "en" : (document.documentElement.getAttribute("lang") || "en");
+  }
   async function downloadCurrentChapter() {
     try {
       setStatus("Preparing chapter…");
@@ -714,33 +747,12 @@
       const chap = currentChapterTitle();                    // "Chapter N"
       const novel = currentNovelTitle();                     // "I Alone Sword Master"
       const title = (novel ? novel + " " : "") + chap;        // EPUB + filename name
-      const images = [];
-      const parts = [];
-      let imgN = 0;
-      for (const it of items) {
-        if (it.text) { parts.push(`<p>${xesc(it.text)}</p>`); continue; }
-        if (it.image) {
-          try {
-            const r = await fetch(it.image, { credentials: "include" });
-            if (!r.ok) continue;
-            const buf = new Uint8Array(await r.arrayBuffer());
-            if (!buf.length) continue;
-            const mime = (r.headers.get("content-type") || "").split(";")[0] || "image/jpeg";
-            imgN++;
-            const name = `images/img${imgN}.${mimeToExt(mime)}`;
-            images.push({ id: `img${imgN}`, name, data: buf, mime });
-            parts.push(`<p><img src="${name}" alt=""/></p>`);
-          } catch (_) { /* skip an image that won't load */ }
-        }
-      }
-      if (!parts.length) { setStatus("No readable content to download."); return; }
-      const lang = ((W.translated && !W.showingOriginal) || CFG.autoTranslate) ? "en" : (document.documentElement.getAttribute("lang") || "en");
-      const meta = { title, author: novel || "", lang };
+      const { xhtmlBody, images } = await buildChapterParts(items, "");
+      if (!xhtmlBody) { setStatus("No readable content to download."); return; }
+      const meta = { title, author: novel || "", lang: readerLang() };
       const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
-      const blob = buildEpub(meta, [{ title: chap, xhtmlBody: parts.join("\n"), srcUrl: location.href }], images);
-      const a = el("a"); a.href = URL.createObjectURL(blob); a.download = sanitizeFile(title) + ".epub";
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 15000);
+      const blob = buildEpub(meta, [{ title: chap, xhtmlBody, srcUrl: location.href }], images);
+      downloadBlob(blob, sanitizeFile(title) + ".epub");
       setStatus(`Downloaded “${title}”.`);
     } catch (e) {
       console.warn("[WebReader] chapter download failed", e);
@@ -1429,6 +1441,267 @@
     }, 500);
   }
 
+  // ============================================================ chapter list + bulk download
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function u8ToB64(u8) { let s = ""; const CH = 0x8000; for (let i = 0; i < u8.length; i += CH) s += String.fromCharCode.apply(null, u8.subarray(i, i + CH)); return btoa(s); }
+  function b64ToU8(b) { const bin = atob(b); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+  const stripQ = (u) => String(u || "").replace(/[#?].*$/, "");
+
+  // The series URL the adapter's getMeta needs, derived from the current chapter URL.
+  function seriesUrlFor(url) {
+    try {
+      const u = new URL(url);
+      if (/(^|\.)(newtoki|booktoki|manatoki|mantoki)\d*\./i.test(u.hostname)) return u.origin + u.pathname.replace(/\/(\d+)\/?$/, "");
+      if (u.hostname.endsWith("wtr-lab.com")) return url.replace(/\/(?:old\/)?chapter-\d+\/?(?:[?#].*)?$/i, "");
+      if (u.hostname.endsWith("kakuyomu.jp")) { const wm = /\/works\/(\d+)/.exec(url); return wm ? `https://kakuyomu.jp/works/${wm[1]}` : url; }
+      return url;
+    } catch (_) { return url; }
+  }
+  // Full chapter list for the current series via the site adapter's getMeta (cached).
+  async function ensureChapterList() {
+    const series = seriesUrlFor(location.href);
+    if (W.chapterList && W.chapterListKey === series) return W.chapterList;
+    globalThis.__WR_TX_VIA_SW = true;
+    const reg = await import(chrome.runtime.getURL("adapters/registry.js"));
+    const adapter = reg.pickAdapter(location.href);
+    const meta = await adapter.getMeta(series);
+    W.chapterList = (meta && Array.isArray(meta.chapters)) ? meta.chapters.map((c, i) => ({ no: c.no != null ? c.no : i + 1, url: c.url, title: c.title || ("Chapter " + (i + 1)) })) : [];
+    W.chapterListKey = series;
+    W.novelTitle = (meta && meta.title) || currentNovelTitle();
+    return W.chapterList;
+  }
+  function currentChapterIndex(list) {
+    const here = stripQ(location.href);
+    let idx = list.findIndex((c) => stripQ(c.url) === here);
+    if (idx < 0) { const tail = here.replace(/^https?:\/\/[^/]+/, ""); idx = list.findIndex((c) => c.url && stripQ(c.url).endsWith(tail)); }
+    return idx;
+  }
+  function goToChapterUrl(url) {
+    if (!url) return;
+    if (W.overlayNav && W.overlayNav.pageNav) navigateToChapter(url, W.speaking);
+    else gotoChapter(url, W.speaking);
+  }
+
+  // ---- Chapters drawer (left) ----
+  function closeTocDrawer() { const d = W.overlay && W.overlay.querySelector(".wr-ov-toc"); if (d) d.remove(); }
+  async function openTocDrawer() {
+    if (!W.overlay) return;
+    if (W.overlay.querySelector(".wr-ov-toc")) { closeTocDrawer(); return; } // toggle off
+    const d = el("div", "wr-ov-toc");
+    d.innerHTML = `
+      <div class="wr-ov-toc-head"><span>Chapters</span><button class="wr-icon" data-toc="close">✕</button></div>
+      <div class="wr-ov-toc-tools">
+        <button class="wr-btn wr-sm" data-toc="all">All</button>
+        <button class="wr-btn wr-sm" data-toc="none">None</button>
+        <button class="wr-btn wr-sm" data-toc="here">From here</button>
+        <button class="wr-btn wr-sm wr-primary" data-toc="dl">⬇ Download…</button>
+      </div>
+      <div class="wr-ov-toc-list">Loading chapters…</div>`;
+    W.overlay.appendChild(d);
+    d.querySelector('[data-toc="close"]').addEventListener("click", closeTocDrawer);
+    const list = d.querySelector(".wr-ov-toc-list");
+    let chapters = [];
+    try { chapters = await ensureChapterList(); } catch (e) { list.textContent = "Couldn't load the chapter list."; return; }
+    if (!chapters.length) { list.textContent = "No chapters found."; return; }
+    const curIdx = currentChapterIndex(chapters);
+    list.innerHTML = "";
+    chapters.forEach((c, i) => {
+      const row = el("label", "wr-ov-toc-row" + (i === curIdx ? " wr-current" : ""));
+      const cb = el("input"); cb.type = "checkbox"; cb.dataset.i = String(i);
+      const t = el("span", "wr-ov-toc-t"); t.textContent = c.title || ("Chapter " + (c.no != null ? c.no : i + 1));
+      t.addEventListener("click", (e) => { e.preventDefault(); goToChapterUrl(c.url); });
+      row.appendChild(cb); row.appendChild(t); list.appendChild(row);
+    });
+    const curRow = list.children[curIdx]; if (curRow) curRow.scrollIntoView({ block: "center" });
+    const boxes = () => Array.from(list.querySelectorAll('input[type="checkbox"]'));
+    d.querySelector('[data-toc="all"]').addEventListener("click", () => boxes().forEach((b) => (b.checked = true)));
+    d.querySelector('[data-toc="none"]').addEventListener("click", () => boxes().forEach((b) => (b.checked = false)));
+    d.querySelector('[data-toc="here"]').addEventListener("click", () => boxes().forEach((b, i) => (b.checked = i >= curIdx)));
+    d.querySelector('[data-toc="dl"]').addEventListener("click", () => {
+      const sel = boxes().filter((b) => b.checked).map((b) => +b.dataset.i);
+      openDownloadDialog(chapters, curIdx, sel);
+    });
+  }
+
+  // ---- Download options dialog ----
+  function openDownloadDialog(chapters, curIdx, preSel) {
+    const old = W.overlay.querySelector(".wr-ov-dl"); if (old) old.remove();
+    const pageNav = !!(W.overlayNav && W.overlayNav.pageNav);
+    const lastNo = (chapters[chapters.length - 1] && chapters[chapters.length - 1].no) || chapters.length;
+    const curNo = (chapters[curIdx] && chapters[curIdx].no) || 1;
+    const d = el("div", "wr-ov-dl");
+    d.innerHTML = `
+      <div class="wr-ov-toc-head"><span>Download chapters</span><button class="wr-icon" data-dl="close">✕</button></div>
+      <div class="wr-dl-body">
+        <label class="wr-dl-row">Which <select data-dl="scope">
+          <option value="selected">Selected (${preSel.length})</option>
+          <option value="here">From here to the end</option>
+          <option value="range">Range…</option>
+          <option value="all">All (${chapters.length})</option>
+        </select></label>
+        <div class="wr-dl-row wr-dl-range wr-hidden">From <input type="number" min="1" data-dl="from" value="${curNo}"> to <input type="number" min="1" data-dl="to" value="${lastNo}"></div>
+        <label class="wr-dl-row">Output <select data-dl="output"><option value="individual">One file per chapter</option><option value="combined">One combined EPUB</option></select></label>
+        <label class="wr-dl-row">Language <select data-dl="lang"><option value="en">English</option><option value="match">Match reader</option><option value="orig">Original</option></select></label>
+        ${pageNav ? `<label class="wr-dl-row">Mode <select data-dl="mode"><option value="tab">This tab</option><option value="bg">Background tab</option></select></label>` : ""}
+        <div class="wr-dl-row"><button class="wr-btn wr-primary" data-dl="start">Start download</button></div>
+        <div class="wr-dl-note"></div>
+      </div>`;
+    W.overlay.appendChild(d);
+    d.querySelector('[data-dl="close"]').addEventListener("click", () => d.remove());
+    const scopeSel = d.querySelector('[data-dl="scope"]');
+    scopeSel.value = preSel.length ? "selected" : "here";
+    const rangeRow = d.querySelector(".wr-dl-range");
+    const syncRange = () => rangeRow.classList.toggle("wr-hidden", scopeSel.value !== "range");
+    scopeSel.addEventListener("change", syncRange); syncRange();
+    const note = d.querySelector(".wr-dl-note");
+    const modeSel = d.querySelector('[data-dl="mode"]');
+    if (modeSel) modeSel.addEventListener("change", () => { note.textContent = modeSel.value === "bg" ? "Background mode isn't available yet — this run will use the current tab." : ""; });
+    d.querySelector('[data-dl="start"]').addEventListener("click", () => {
+      const scope = scopeSel.value;
+      let idxs = [];
+      if (scope === "selected") idxs = preSel.slice();
+      else if (scope === "here") idxs = chapters.map((_, i) => i).filter((i) => i >= Math.max(curIdx, 0));
+      else if (scope === "all") idxs = chapters.map((_, i) => i);
+      else if (scope === "range") {
+        const from = +d.querySelector('[data-dl="from"]').value, to = +d.querySelector('[data-dl="to"]').value;
+        const lo = Math.min(from, to), hi = Math.max(from, to);
+        idxs = chapters.map((c, i) => i).filter((i) => { const n = chapters[i].no != null ? chapters[i].no : i + 1; return n >= lo && n <= hi; });
+      }
+      idxs = [...new Set(idxs)].sort((a, b) => a - b);
+      if (!idxs.length) { note.textContent = "No chapters selected."; return; }
+      const opts = {
+        output: d.querySelector('[data-dl="output"]').value,
+        lang: d.querySelector('[data-dl="lang"]').value,
+        mode: "tab", // background mode falls back to current tab for now
+        pageNav,
+      };
+      d.remove(); closeTocDrawer();
+      startCrawl(chapters, idxs, opts);
+    });
+  }
+
+  // ---- Progress UI ----
+  function showCrawlProgress(done, total, label) {
+    let p = W.root && W.root.querySelector(".wr-crawl");
+    if (!p) {
+      p = el("div", "wr-crawl");
+      p.innerHTML = `<div class="wr-crawl-bar"><div class="wr-crawl-fill"></div></div><div class="wr-crawl-text"></div><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button>`;
+      W.root.appendChild(p);
+      p.querySelector('[data-crawl="cancel"]').addEventListener("click", cancelCrawl);
+    }
+    p.classList.remove("wr-hidden");
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    p.querySelector(".wr-crawl-fill").style.width = pct + "%";
+    p.querySelector(".wr-crawl-text").textContent = `Downloading ${Math.min(done + 1, total)} / ${total}${label ? " — " + String(label).slice(0, 36) : ""}`;
+  }
+  function hideCrawlProgress() { const p = W.root && W.root.querySelector(".wr-crawl"); if (p) p.classList.add("wr-hidden"); }
+  function cancelCrawl() { W._crawlCancel = true; clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); }
+
+  // ---- Combined-EPUB accumulator (survives page reloads for the navigate engine) ----
+  function clearCrawl() { try { sessionStorage.removeItem("wrCrawl"); } catch (_) {} }
+  function getCrawlState() { try { return JSON.parse(sessionStorage.getItem("wrCrawl") || "null"); } catch (_) { return null; } }
+  function clearCrawlData() { return new Promise((res) => { try { chrome.storage.local.set({ wrCrawlChapters: [] }, res); } catch (_) { res(); } }); }
+  function appendCrawlData(entry) { return new Promise((res) => { try { chrome.storage.local.get("wrCrawlChapters", (o) => { const arr = (o && o.wrCrawlChapters) || []; arr.push(entry); chrome.storage.local.set({ wrCrawlChapters: arr }, res); }); } catch (_) { res(); } }); }
+  async function finalizeCombined(novel) {
+    const data = await new Promise((res) => { try { chrome.storage.local.get("wrCrawlChapters", (o) => res((o && o.wrCrawlChapters) || [])); } catch (_) { res([]); } });
+    if (!data.length) return;
+    const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
+    const chapters = data.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl }));
+    const images = data.flatMap((c) => (c.images || []).map((im) => ({ id: im.id, name: im.name, mime: im.mime, data: b64ToU8(im.b64) })));
+    downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, chapters, images), sanitizeFile(novel) + ".epub");
+    await clearCrawlData();
+  }
+
+  function wantTranslateFor(lang) {
+    return lang === "en" || (lang === "match" && ((W.translated && !W.showingOriginal) || CFG.autoTranslate));
+  }
+
+  async function startCrawl(chapters, idxs, opts) {
+    const queue = idxs.map((i) => ({ url: chapters[i].url, no: chapters[i].no, title: chapters[i].title }));
+    if (!queue.length) return;
+    const novel = W.novelTitle || currentNovelTitle() || "Novel";
+    W._crawlCancel = false;
+    if (!opts.pageNav) return crawlFetch(queue, opts, novel);         // adapter sites: fetch loop (no reload)
+    const state = { queue, idx: 0, opts, novel, t: Date.now() };       // newtoki: navigate-scrape, persisted
+    try { sessionStorage.setItem("wrCrawl", JSON.stringify(state)); } catch (_) {}
+    await clearCrawlData();
+    showCrawlProgress(0, queue.length, queue[0].title);
+    if (stripQ(location.href) === stripQ(queue[0].url)) resumeCrawl();
+    else location.assign(queue[0].url);
+  }
+
+  // Adapter sites: fetch each chapter in place (fast, no navigation).
+  async function crawlFetch(queue, opts, novel) {
+    showCrawlProgress(0, queue.length, queue[0].title);
+    const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
+    const collected = [];
+    for (let i = 0; i < queue.length; i++) {
+      if (W._crawlCancel) { hideCrawlProgress(); setStatus("Download cancelled."); return; }
+      const ch = queue[i];
+      showCrawlProgress(i, queue.length, ch.title);
+      let content = null;
+      try { W.adapterUrl = null; W.adapterContent = undefined; content = await getAdapterContent(ch.url); } catch (_) {}
+      if (!content || !content.items || !content.items.length) continue;
+      const title = content.title || ch.title || ("Chapter " + (ch.no != null ? ch.no : i + 1));
+      const { xhtmlBody, images } = await buildChapterParts(content.items, opts.output === "combined" ? `c${i}_` : "");
+      if (!xhtmlBody) continue;
+      if (opts.output === "individual") {
+        downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + title, author: novel, lang: "en" }, [{ title, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + title) + ".epub");
+        await sleep(150);
+      } else collected.push({ title, xhtmlBody, images, srcUrl: ch.url });
+    }
+    if (opts.output === "combined" && collected.length) {
+      downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, collected.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl })), collected.flatMap((c) => c.images)), sanitizeFile(novel) + ".epub");
+    }
+    hideCrawlProgress(); setStatus("Download complete.");
+  }
+
+  // newtoki/pageNav: resume the navigate-scrape crawl after each page load.
+  async function resumeCrawl() {
+    const st = getCrawlState();
+    if (!st || (Date.now() - st.t) > 6 * 3600 * 1000) { clearCrawl(); return; }
+    W._crawlCancel = false;
+    showCrawlProgress(st.idx, st.queue.length, st.queue[st.idx] && st.queue[st.idx].title);
+    // wait for the chapter prose to render
+    let blocks = [], tries = 0;
+    while (tries < 60) {
+      try { blocks = pageReadableBlocks(); } catch (_) {}
+      if (blocks.length > 2) break;
+      if (/Access denied/i.test(document.title)) { showCrawlProgress(st.idx, st.queue.length, "Blocked — retrying (check VPN)"); await sleep(5000); location.reload(); return; }
+      await sleep(500); tries++;
+    }
+    const ch = st.queue[st.idx];
+    const novel = st.novel || currentNovelTitle();
+    if (blocks.length > 2) {
+      if (wantTranslateFor(st.opts.lang)) { try { await translateNewNodes(); } catch (_) {} }
+      const items = collectItems(pickContent());
+      const chapTitle = currentChapterTitle() || ch.title || ("Chapter " + (ch.no != null ? ch.no : st.idx + 1));
+      if (items.length) {
+        const { xhtmlBody, images } = await buildChapterParts(items, st.opts.output === "combined" ? `c${st.idx}_` : "");
+        if (xhtmlBody) {
+          if (st.opts.output === "individual") {
+            const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
+            downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + chapTitle, author: novel, lang: wantTranslateFor(st.opts.lang) ? "en" : readerLang() }, [{ title: chapTitle, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + chapTitle) + ".epub");
+          } else {
+            await appendCrawlData({ title: chapTitle, xhtmlBody, images: images.map((im) => ({ id: im.id, name: im.name, mime: im.mime, b64: u8ToB64(im.data) })), srcUrl: ch.url });
+          }
+        }
+      }
+    }
+    if (W._crawlCancel) { clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+    st.idx++;
+    if (st.idx < st.queue.length) {
+      try { sessionStorage.setItem("wrCrawl", JSON.stringify(st)); } catch (_) {}
+      showCrawlProgress(st.idx, st.queue.length, st.queue[st.idx] && st.queue[st.idx].title);
+      await sleep(500);
+      location.assign(st.queue[st.idx].url);
+    } else {
+      clearCrawl();
+      if (st.opts.output === "combined") { setStatus("Building combined EPUB…"); await finalizeCombined(novel); }
+      hideCrawlProgress(); setStatus(`Download complete — ${st.queue.length} chapter(s).`);
+    }
+  }
+
   async function openReaderOverlay() {
     setStatus("Loading…");
     let adapted = null;
@@ -1459,6 +1732,7 @@
     const ov = el("div", "wr-overlay");
     ov.innerHTML = `
       <div class="wr-ov-bar">
+        <button class="wr-icon wr-ov-tocbtn" data-ov="toc" title="Chapters">☰</button>
         <span class="wr-ov-title"></span>
         <span class="wr-head-btns">
           <button class="wr-btn wr-sm" data-ov="prev" title="Previous chapter">← Prev</button>
@@ -1493,6 +1767,7 @@
     W.overlay = ov;
 
     ov.querySelector('[data-ov="close"]').addEventListener("click", closeReaderOverlay);
+    ov.querySelector('[data-ov="toc"]').addEventListener("click", openTocDrawer);
     ov.querySelector('[data-ov="dl"]').addEventListener("click", downloadCurrentChapter);
     ov.querySelector('[data-ov="display"]').addEventListener("click", toggleOvDisplay);
     // Floating "back to top": show once the reader is scrolled down, jump to the top on tap.
@@ -1588,7 +1863,9 @@
     watchSpaNav();
     watchEnableFlag();
     if (CFG.autoTranslate) setTimeout(() => translatePage(), 600);
-    maybeReopenReader(); // resume reader mode after a Prev/Next page navigation
+    // A multi-chapter download in progress takes priority over a one-off reader reopen.
+    if (getCrawlState()) resumeCrawl();
+    else maybeReopenReader(); // resume reader mode after a Prev/Next page navigation
   }
 
   // React to the extension tab enabling/disabling the widget without a reload.
