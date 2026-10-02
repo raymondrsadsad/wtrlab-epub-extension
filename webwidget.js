@@ -844,6 +844,28 @@
     const b = W.blocks[bi];
     if (b && b.el && scroll !== false && CFG.follow !== false) { try { b.el.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_) {} }
   }
+  // Our highlight/cursor CSS lives in the light DOM and can't style elements inside a
+  // shadow root (style encapsulation). When any readable block lives in a shadow root
+  // (e.g. newtoki's chapter prose), inject a tiny stylesheet into that root so the
+  // wr-speaking / wr-readable classes we toggle on those elements are actually visible.
+  function injectShadowHighlightCss(blocks) {
+    const roots = new Set();
+    for (const b of blocks || []) {
+      const el = b && b.el;
+      if (!el || !el.getRootNode) continue;
+      const r = el.getRootNode();
+      if (r && r.nodeType === 11 && r.host) roots.add(r); // a ShadowRoot
+    }
+    for (const r of roots) {
+      try {
+        if (r.querySelector && r.querySelector("#wr-shadow-hl")) continue;
+        const st = document.createElement("style");
+        st.id = "wr-shadow-hl";
+        st.textContent = ".wr-speaking{background:var(--wr-speak,rgba(111,131,172,.28))!important;border-radius:4px;transition:background .2s;}.wr-readable{cursor:pointer;}";
+        r.appendChild(st);
+      } catch (_) {}
+    }
+  }
   // Pause (ms) inserted only at a paragraph boundary; 0 within one long paragraph's pieces.
   function gapBetween(a, b) {
     return W.chunks[b].si !== W.chunks[a].si ? (CFG.sentPause || 0) : 0;
@@ -1233,6 +1255,7 @@
     if (tb && !blocks.some((b) => b.el === tb.el)) blocks.unshift(tb);
     W.blocks = blocks; W.ttsHost = "page"; W.chunks = [];
     W.blocks.forEach((b) => b.el && b.el.classList.add("wr-readable")); // cursor hint: click to read from here
+    injectShadowHighlightCss(W.blocks); // make highlight visible for prose inside shadow roots
     const bar = W.panel.querySelector('[data-tts="panel"]');
     if (bar && !bar.dataset.wired) { bar.innerHTML = ttsBarHtml(); wireTtsBar(bar); bar.dataset.wired = "1"; }
     if (bar) bar.classList.remove("wr-hidden");
