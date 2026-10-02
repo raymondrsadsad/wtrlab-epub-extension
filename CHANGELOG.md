@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.18.0 — 2026-10-03
+
+### Added
+- **newtoki / booktoki support.** A dedicated adapter lists every chapter of a series (walking the
+  `?epage` pages — e.g. all 1110 at once, instead of just one), and the on-site Web Reader now works
+  on newtoki chapters: Translate page, Read aloud, Reader mode and the per-chapter download all read
+  the story even though newtoki renders it inside a shadow DOM.
+- **Reader-mode Prev / Next on newtoki.** The reader's ← Prev / Next → now follow the site's own
+  chapter links, reopening the reader on the next chapter and carrying your translation (and playback)
+  across — so you can read straight through, translated.
+- **Download one chapter as EPUB.** A new ⬇ button on the floating mini-player and in Reader mode
+  saves just the current chapter as a one-chapter EPUB, named `<Novel> Chapter N.epub`, using the text
+  as shown (English when you've translated it) and embedding any illustrations.
+- **Keep playing with the screen off + lock-screen controls.** Read-aloud can now continue when the
+  tab is hidden or the screen is off, and shows play/pause · prev/next · stop in the notification
+  shade and on the lock screen (Media Session). Toggle it with "Keep playing in background".
+
+### Fixed
+- **wtr-lab chapters fetch again.** wtr-lab moved the chapter body to a separate signed content URL;
+  the reader/packer no longer errors with "Cannot read properties of undefined (reading 'data')".
+- **Translation & read-aloud now reach shadow-DOM prose** (newtoki) instead of only the surrounding
+  menus, and the TTS line-highlight shows inside it.
+- **Expanded widget panel** is capped to half the visible screen, stays on-screen, and scrolls with a
+  pinned header, so the collapse/close buttons and lower options are always reachable on mobile.
+
 ## 1.17.0 — 2026-09-29
 
 ### Added
