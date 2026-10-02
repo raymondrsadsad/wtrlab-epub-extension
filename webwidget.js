@@ -567,6 +567,24 @@
   // wraps the chapter body in ".menu-target" (a right-click-menu target, not a menu);
   // matching it as a "menu" would hide the whole chapter from Read aloud / Reader mode.
   const NOT_BAD = /(^|\s|-|_)menu-target(\s|$)/i;
+  // querySelectorAll that also descends into open shadow roots — some readers render
+  // the chapter prose inside a shadow root (e.g. newtoki's .theme-novel-content), which
+  // a plain querySelectorAll can't see, so Read aloud/Reader would only find the menu.
+  function deepQueryAll(root, sel) {
+    const out = [];
+    const visit = (r) => {
+      if (!r || !r.querySelectorAll) return;
+      out.push(...r.querySelectorAll(sel));
+      for (const el of r.querySelectorAll("*")) if (el.shadowRoot) visit(el.shadowRoot);
+    };
+    visit(root);
+    return out;
+  }
+  function deepTextLen(el) {
+    let n = (el.textContent || "").length;
+    for (const h of (el.querySelectorAll ? el.querySelectorAll("*") : [])) if (h.shadowRoot) n += (h.shadowRoot.textContent || "").length;
+    return n;
+  }
   function pickContent() {
     const cands = Array.from(document.querySelectorAll(
       "article, main, [class*=content], [class*=chapter], [id*=content], [id*=chapter], .entry-content, .post-content, .reading-content, .text-content, .js-episode-body, .widget-episodeBody, [class*=episode i]"
@@ -577,12 +595,12 @@
       if (c.closest("#wr-root")) continue;
       const cls = (c.className || "") + " " + (c.id || "");
       if (BAD.test(cls) && !NOT_BAD.test(cls)) continue;
-      const ps = c.querySelectorAll("p");
+      const ps = deepQueryAll(c, "p");
       let textLen = 0;
       ps.forEach((p) => (textLen += (p.textContent || "").trim().length));
-      if (!ps.length) textLen = (c.textContent || "").trim().length * 0.2;
-      const linkText = Array.from(c.querySelectorAll("a")).reduce((n, a) => n + (a.textContent || "").length, 0);
-      const total = (c.textContent || "").length || 1;
+      if (!ps.length) textLen = deepTextLen(c) * 0.2;
+      const linkText = deepQueryAll(c, "a").reduce((n, a) => n + (a.textContent || "").length, 0);
+      const total = deepTextLen(c) || 1;
       const score = textLen * (1 - Math.min(linkText / total, 0.95));
       if (score > bestScore) { bestScore = score; best = c; }
     }
@@ -611,12 +629,12 @@
       seen.add(n);
       out.push({ el: n, text: t });
     };
-    container.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, dd").forEach(add);
+    deepQueryAll(container, "p, h1, h2, h3, h4, h5, h6, li, blockquote, dd").forEach(add);
     // Many readers (e.g. wtr-lab) render each paragraph as a <div>/<section>, not <p>.
     // If the tag scan found little prose, also collect "leaf" block containers — ones
     // whose text isn't split into child blocks — so those paragraphs get read too.
     if (out.length < 2) {
-      container.querySelectorAll("div, section, article").forEach((n) => {
+      deepQueryAll(container, "div, section, article").forEach((n) => {
         if (seen.has(n)) return;
         // leaf-ish: contains no nested block that would (or already did) become a block
         if (n.querySelector("p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, div, section, article, ul, ol, table")) return;
