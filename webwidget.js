@@ -1264,6 +1264,55 @@
   }
 
   // ================================================================= reader overlay
+  // Detect the site's OWN Prev/Next chapter links from the page (e.g. newtoki's
+  // .theme-novel-nav "Previous/Next episode"). Used for reader-mode Prev/Next on sites
+  // whose chapter text can't be fetched into the overlay — there we navigate the real
+  // page instead. Returns { prevUrl, nextUrl, pageNav:true } or null.
+  function detectSiteChapterNav() {
+    const scope = document.querySelector(".theme-novel-nav, .novel-nav, .view-nav, .pg-nav") || document.body;
+    let prevUrl = null, nextUrl = null;
+    for (const a of scope.querySelectorAll("a[href]")) {
+      if (a.closest("#wr-root")) continue;
+      const href = a.getAttribute("href"); if (!href || /^#/.test(href) || /^javascript:/i.test(href)) continue;
+      const t = ((a.textContent || "") + " " + (a.getAttribute("title") || "") + " " + (a.getAttribute("aria-label") || "")).replace(/\s+/g, " ").trim();
+      let abs; try { abs = new URL(href, location.href).href; } catch (_) { continue; }
+      if (abs === location.href) continue;
+      if (!prevUrl && /previous\s*episode|이전\s*화|이전화|prev(ious)?\b|◀|‹|←/i.test(t)) prevUrl = abs;
+      else if (!nextUrl && /next\s*episode|다음\s*화|다음화|\bnext\b|▶|›|→/i.test(t)) nextUrl = abs;
+    }
+    return (prevUrl || nextUrl) ? { prevUrl, nextUrl, pageNav: true } : null;
+  }
+  // Prev/Next for fetch-less sites: remember to reopen the reader (and resume TTS) after the
+  // load, then navigate the real page to the sibling chapter.
+  function navigateToChapter(url, autoplay) {
+    if (!url) return;
+    try { sessionStorage.setItem("wrReopenReader", JSON.stringify({ autoplay: !!autoplay, t: Date.now() })); } catch (_) {}
+    setStatus("Loading chapter…");
+    location.assign(url);
+  }
+  // After a page-nav Prev/Next, re-open the reader overlay once the new chapter's prose has
+  // rendered (newtoki fills its shadow root asynchronously), and resume playback if it was on.
+  function maybeReopenReader() {
+    let intent = null;
+    try { intent = JSON.parse(sessionStorage.getItem("wrReopenReader") || "null"); } catch (_) {}
+    if (!intent || (Date.now() - intent.t) > 25000) { try { sessionStorage.removeItem("wrReopenReader"); } catch (_) {} return; }
+    try { sessionStorage.removeItem("wrReopenReader"); } catch (_) {}
+    let tries = 0;
+    const timer = setInterval(async () => {
+      tries++;
+      let blocks = [];
+      try { blocks = pageReadableBlocks(); } catch (_) {}
+      if (blocks.length > 2 || tries > 50) { // wait up to ~25s for async content
+        clearInterval(timer);
+        if (!blocks.length) return;
+        try {
+          await openReaderOverlay();
+          if (intent.autoplay && W.ttsHost === "overlay" && W.blocks.length) speakFrom(0);
+        } catch (_) {}
+      }
+    }, 500);
+  }
+
   async function openReaderOverlay() {
     setStatus("Loading…");
     let adapted = null;
@@ -1275,7 +1324,9 @@
     const src = pageReadableBlocks();
     if (!src.length) { setStatus("No readable text to show in the reader."); return; }
     const title = (document.querySelector("h1, h2") || {}).textContent || document.title || "Reading";
-    buildOverlay(title, src.map((b) => ({ text: b.text })));
+    // Chapter text isn't fetchable here, but the page exposes its own Prev/Next links —
+    // wire them so reader-mode Prev/Next navigate the real page (and reopen the reader).
+    buildOverlay(title, src.map((b) => ({ text: b.text })), detectSiteChapterNav());
   }
 
   // Render a clean reading overlay from items ([{text}|{image}]) and start the reader.
@@ -1330,8 +1381,11 @@
     if (CFG.ovImportedFont && CFG.ovImportedFont.name && CFG.ovImportedFont.dataUrl) registerOvFont(CFG.ovImportedFont.name, CFG.ovImportedFont.dataUrl).then(applyOverlayDisplay);
     applyOverlayDisplay();
     const prevBtn = ov.querySelector('[data-ov="prev"]'), nextBtn = ov.querySelector('[data-ov="next"]');
-    prevBtn.disabled = !(nav && nav.prevUrl); prevBtn.addEventListener("click", () => gotoChapter(nav && nav.prevUrl, W.speaking));
-    nextBtn.disabled = !(nav && nav.nextUrl); nextBtn.addEventListener("click", () => gotoChapter(nav && nav.nextUrl, W.speaking));
+    // pageNav sites (e.g. newtoki) can't fetch a sibling chapter into the overlay, so Prev/Next
+    // navigate the real page; adapter sites load the chapter in place via gotoChapter.
+    const go = (url) => { if (!url) return; (nav && nav.pageNav) ? navigateToChapter(url, W.speaking) : gotoChapter(url, W.speaking); };
+    prevBtn.disabled = !(nav && nav.prevUrl); prevBtn.addEventListener("click", () => go(nav && nav.prevUrl));
+    nextBtn.disabled = !(nav && nav.nextUrl); nextBtn.addEventListener("click", () => go(nav && nav.nextUrl));
     const bar = ov.querySelector(".wr-ov-tts");
     bar.innerHTML = ttsBarHtml(); wireTtsBar(bar);
     content.addEventListener("click", (e) => {
@@ -1353,8 +1407,10 @@
   }
   // End of a chapter's TTS: auto-advance to the next chapter in the reader, else stop.
   function onReadFinished() {
-    if (CFG.autoNext !== false && W.ttsHost === "overlay" && W.overlayNav && W.overlayNav.nextUrl) { gotoChapter(W.overlayNav.nextUrl, true); }
-    else { stopTts(); setStatus("Finished reading."); }
+    if (CFG.autoNext !== false && W.ttsHost === "overlay" && W.overlayNav && W.overlayNav.nextUrl) {
+      if (W.overlayNav.pageNav) navigateToChapter(W.overlayNav.nextUrl, true);
+      else gotoChapter(W.overlayNav.nextUrl, true);
+    } else { stopTts(); setStatus("Finished reading."); }
   }
 
   // ================================================================= open in extension reader
@@ -1408,6 +1464,7 @@
     watchSpaNav();
     watchEnableFlag();
     if (CFG.autoTranslate) setTimeout(() => translatePage(), 600);
+    maybeReopenReader(); // resume reader mode after a Prev/Next page navigation
   }
 
   // React to the extension tab enabling/disabling the widget without a reload.
