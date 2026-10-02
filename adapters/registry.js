@@ -3,10 +3,11 @@
 // and add its factory to SITE_ADAPTERS (before the generic fallback).
 import { create as createWtrlab } from "./wtrlab.js";
 import { create as createKakuyomu } from "./kakuyomu.js";
+import { create as createNewtoki } from "./newtoki.js";
 import { create as createGeneric } from "./generic.js";
 
-const SITE_ADAPTERS = [createWtrlab, createKakuyomu];
-const BY_ID = { wtrlab: createWtrlab, kakuyomu: createKakuyomu, generic: createGeneric };
+const SITE_ADAPTERS = [createWtrlab, createKakuyomu, createNewtoki];
+const BY_ID = { wtrlab: createWtrlab, kakuyomu: createKakuyomu, newtoki: createNewtoki, generic: createGeneric };
 
 export function pickAdapter(url) {
   for (const factory of SITE_ADAPTERS) {

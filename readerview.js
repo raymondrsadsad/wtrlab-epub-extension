@@ -26,6 +26,8 @@ const R = {
   tocReversed: false, // Contents list shown newest-first (357→1)
   tocTranslated: false, tocTitlesEn: null, // Contents titles translated to English
   autoNext: true, // auto-advance to the next chapter when TTS finishes one
+  bgPlay: true,   // keep speaking with the screen off / tab hidden (silent keep-alive + OS media controls)
+  ka: null, _msWired: false, // keep-alive <audio> element + whether Media Session handlers are set
   immersive: false, // chrome (top bar + player) hidden while reading
   lastY: 0,         // last scroll position (for hide/show direction)
   progScroll: 0,    // timestamp of a programmatic scroll (TTS follow) to ignore
@@ -485,6 +487,59 @@ function updatePlayBtn() {
   const playing = R.speaking && !R.paused;
   b.textContent = playing ? "⏸" : "▶";
   b.title = playing ? "Pause (Space)" : "Play (Space)";
+  syncMedia();
+}
+
+// ---- Background playback + lock-screen / notification controls (Media Session) ----
+// speechSynthesis isn't "media", so on its own Chrome shows no notification and FREEZES a
+// backgrounded tab (screen off → speech dies). Playing a silent, looping <audio> at full volume
+// gives the page audio focus: that surfaces the OS media controls (notification + lock screen on
+// Android) AND keeps the tab alive so speech keeps going with the screen off. The WAV is pure
+// silence, so nothing is heard. All of this is gated on R.bgPlay. (Mirrors webwidget.js.)
+const RV_SILENCE = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+function mediaKeepAlive(on) {
+  try {
+    if (on) {
+      if (!R.ka) { R.ka = new Audio(RV_SILENCE); R.ka.loop = true; R.ka.volume = 1; }
+      const p = R.ka.play(); if (p && p.catch) p.catch(() => {}); // autoplay may reject off-gesture
+    } else if (R.ka) { R.ka.pause(); }
+  } catch (_) {}
+}
+function mediaState(state) { // "playing" | "paused" | "none"
+  try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = state; } catch (_) {}
+}
+function mediaMeta() {
+  try {
+    if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
+    const book = (R.book && R.book.meta && R.book.meta.title) || "Reading";
+    const chTitle = ($("readChapTitle") && $("readChapTitle").textContent) || book;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: (chTitle || book).trim().slice(0, 140),
+      artist: book,
+      album: "EPUB Reader",
+      artwork: R.coverUrl ? [{ src: R.coverUrl, sizes: "512x512", type: "image/jpeg" }] : [],
+    });
+  } catch (_) {}
+}
+function mediaSetup() {
+  try {
+    if (!("mediaSession" in navigator) || R._msWired) return;
+    const ms = navigator.mediaSession;
+    const set = (a, fn) => { try { ms.setActionHandler(a, fn); } catch (_) {} };
+    set("play", () => { if (!R.speaking || R.paused) togglePlay(); });
+    set("pause", () => { if (R.speaking && !R.paused) togglePlay(); });
+    set("previoustrack", () => stepLine(-1));
+    set("nexttrack", () => stepLine(1));
+    set("stop", () => stopTts());
+    R._msWired = true;
+  } catch (_) {}
+}
+// Keep the keep-alive audio + OS media controls in lock-step with TTS state. updatePlayBtn
+// (which every start/pause/stop path routes through) calls this.
+function syncMedia() {
+  if (R.bgPlay === false) { mediaKeepAlive(false); mediaState("none"); return; }
+  if (R.speaking) { mediaSetup(); mediaMeta(); mediaKeepAlive(true); mediaState(R.paused ? "paused" : "playing"); }
+  else { mediaKeepAlive(false); mediaState("none"); }
 }
 
 // ---- voices ----
@@ -696,7 +751,7 @@ function closeDisplay() { $("readDisplayPanel").classList.remove("open"); $("rea
 function saveReaderPrefs() {
   if (!store) return;
   try { store.set({ readerPrefs: {
-    follow: R.follow, hl: R.hl, readSymbols: R.readSymbols, autoNext: R.autoNext, rate: R.rate, pitch: R.pitch, sentPause: R.sentPause, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed, tocReversed: R.tocReversed,
+    follow: R.follow, hl: R.hl, readSymbols: R.readSymbols, autoNext: R.autoNext, bgPlay: R.bgPlay, rate: R.rate, pitch: R.pitch, sentPause: R.sentPause, voiceName: R.userVoice, pos: R.pos, collapsed: R.collapsed, tocReversed: R.tocReversed,
     theme: R.theme, customBg: R.customBg, customFg: R.customFg, fontKey: R.fontKey, importedFont: R.importedFont,
     fontSize: R.fontSize, lineHeight: R.lineHeight, width: R.width, paraGap: R.paraGap, justify: R.justify, bold: R.bold,
   } }); } catch (_) {}
@@ -837,6 +892,7 @@ export function initRead() {
   $("ttsHighlight").addEventListener("change", (e) => { R.hl = e.target.checked; highlight(R.segIndex, false); saveReaderPrefs(); });
   if ($("ttsSymbols")) $("ttsSymbols").addEventListener("change", (e) => { R.readSymbols = e.target.checked; saveReaderPrefs(); if (R.speaking) speakFrom(R.segIndex); });
   if ($("ttsAutoNext")) $("ttsAutoNext").addEventListener("change", (e) => { R.autoNext = e.target.checked; saveReaderPrefs(); });
+  if ($("ttsBgPlay")) $("ttsBgPlay").addEventListener("change", (e) => { R.bgPlay = e.target.checked; saveReaderPrefs(); syncMedia(); });
   $("ttsCollapse").addEventListener("click", () => { R.collapsed = !R.collapsed; applyPlayerPos(); saveReaderPrefs(); }); // applyPlayerPos re-clamps the new size into view
   initDrag();
 
@@ -848,6 +904,7 @@ export function initRead() {
       if (typeof p.hl === "boolean") { R.hl = p.hl; $("ttsHighlight").checked = p.hl; }
       if (typeof p.readSymbols === "boolean" && $("ttsSymbols")) { R.readSymbols = p.readSymbols; $("ttsSymbols").checked = p.readSymbols; }
       if (typeof p.autoNext === "boolean" && $("ttsAutoNext")) { R.autoNext = p.autoNext; $("ttsAutoNext").checked = p.autoNext; }
+      if (typeof p.bgPlay === "boolean" && $("ttsBgPlay")) { R.bgPlay = p.bgPlay; $("ttsBgPlay").checked = p.bgPlay; }
       if (typeof p.rate === "number") { R.rate = p.rate; $("ttsRate").value = p.rate.toFixed(1); }
       if (typeof p.pitch === "number" && $("ttsPitch")) { R.pitch = p.pitch; $("ttsPitch").value = p.pitch.toFixed(1); }
       if (typeof p.sentPause === "number" && $("ttsPause")) { R.sentPause = p.sentPause; $("ttsPause").value = (p.sentPause / 1000).toFixed(2); }
@@ -941,7 +998,10 @@ export function initRead() {
   // tabbed in (or reopened the extension). The reading position is kept, so pressing Play (or
   // tapping a paragraph) continues from where it stopped.
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden && R.speaking) stopTts(); // R.segIndex is preserved for a manual resume
+    // Background playback OFF: stop when hidden (R.segIndex kept for a manual resume; no auto-resume).
+    // ON (R.bgPlay, the default): keep going — the silent keep-alive audio holds the tab alive so
+    // reading continues with the screen off / tab hidden, driven by the OS media controls.
+    if (document.hidden && R.speaking && R.bgPlay === false) stopTts();
   });
 
   // keyboard: only while Read mode is visible and focus isn't on a control

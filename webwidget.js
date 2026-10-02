@@ -59,7 +59,7 @@
     ["zh-CN", "Chinese"], ["id", "Indonesian"], ["vi", "Vietnamese"], ["ar", "Arabic"],
     ["hi", "Hindi"], ["tl", "Filipino"],
   ];
-  const CFG = { enabled: false, autoTranslate: false, targetLang: "en", rate: 1, sentPause: 250, voiceName: "", follow: true, highlight: true, readSymbols: true, autoNext: true, pos: null, ttsCollapsed: false,
+  const CFG = { enabled: false, autoTranslate: false, targetLang: "en", rate: 1, sentPause: 250, voiceName: "", follow: true, highlight: true, readSymbols: true, autoNext: true, bgPlay: true, pos: null, ttsCollapsed: false,
     // Page zoom: unlockZoom re-enables native pinch-zoom on sites that block it; zoomByHost is
     // a remembered CSS-zoom factor per hostname (set from the widget's Zoom control).
     unlockZoom: true, zoomByHost: {},
@@ -397,10 +397,12 @@
     // remember where it was; resume from there when the tab is shown again.
     if (!W._visBound) {
       document.addEventListener("visibilitychange", () => {
-        // Stop speaking when hidden (no background interleaving); do NOT auto-resume on return —
-        // that surprised the user by blasting audio on tab-switch. Position is kept (W.blockIdx)
-        // so pressing Play continues from there. (Matches readerview.js.)
-        if (document.hidden && W.speaking) stopTts();
+        // With background playback OFF: stop speaking when hidden (avoids Android's shared TTS
+        // engine interleaving paragraphs across tabs); position is kept (W.blockIdx) so pressing
+        // Play continues from there, and we never auto-resume (that blasts audio on tab-switch).
+        // With background playback ON (CFG.bgPlay, the default): keep going — the silent keep-alive
+        // audio holds the tab alive so reading continues with the screen off / tab hidden.
+        if (document.hidden && W.speaking && CFG.bgPlay === false) stopTts();
       });
       W._visBound = true;
     }
@@ -903,6 +905,58 @@
     else { W.blockIdx = Math.min(Math.max(0, target), W.blocks.length - 1); highlightBlock(W.blockIdx); }
   }
 
+  // ---- Background playback + lock-screen / notification controls (Media Session) ----
+  // speechSynthesis isn't "media", so on its own Chrome shows no notification and FREEZES a
+  // backgrounded tab (screen off → speech dies). Playing a silent, looping <audio> at full
+  // volume gives the page audio focus: that both surfaces the OS media controls (notification +
+  // lock screen on Android) AND keeps the tab alive so speech keeps going with the screen off.
+  // The WAV is pure silence, so nothing is ever heard. All of this is gated on CFG.bgPlay.
+  const WR_SILENCE = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+  function mediaKeepAlive(on) {
+    try {
+      if (on) {
+        if (!W.ka) { W.ka = new Audio(WR_SILENCE); W.ka.loop = true; W.ka.volume = 1; }
+        const p = W.ka.play(); if (p && p.catch) p.catch(() => {}); // autoplay may reject off-gesture
+      } else if (W.ka) { W.ka.pause(); }
+    } catch (_) {}
+  }
+  function mediaState(state) { // "playing" | "paused" | "none"
+    try { if ("mediaSession" in navigator) navigator.mediaSession.playbackState = state; } catch (_) {}
+  }
+  function mediaMeta() {
+    try {
+      if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
+      let icon = null;
+      try { icon = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null; } catch (_) {}
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: ((document.title || "Web Reader").trim()).slice(0, 140),
+        artist: location.hostname,
+        album: "Web Reader",
+        artwork: icon ? [{ src: icon, sizes: "128x128", type: "image/png" }] : [],
+      });
+    } catch (_) {}
+  }
+  function mediaSetup() {
+    try {
+      if (!("mediaSession" in navigator) || W._msWired) return;
+      const ms = navigator.mediaSession;
+      const set = (a, fn) => { try { ms.setActionHandler(a, fn); } catch (_) {} };
+      set("play", () => { if (!W.speaking || W.paused) togglePlay(); });
+      set("pause", () => { if (W.speaking && !W.paused) togglePlay(); });
+      set("previoustrack", () => stepLine(-1));
+      set("nexttrack", () => stepLine(1));
+      set("stop", () => { stopTts(); setStatus("Stopped."); });
+      W._msWired = true;
+    } catch (_) {}
+  }
+  // Keep the keep-alive audio + OS media controls in lock-step with TTS state. Called from
+  // updatePlayBtns, which every start/pause/stop path already routes through.
+  function syncMedia() {
+    if (CFG.bgPlay === false) { mediaKeepAlive(false); mediaState("none"); return; }
+    if (W.speaking) { mediaSetup(); mediaMeta(); mediaKeepAlive(true); mediaState(W.paused ? "paused" : "playing"); }
+    else { mediaKeepAlive(false); mediaState("none"); }
+  }
+
   // Voices
   const PREFERRED_VOICE = "Google US English";
   function pickVoiceIndex(voices) {
@@ -951,6 +1005,7 @@
           <label class="wr-check"><input type="checkbox" class="wr-hl" ${CFG.highlight !== false ? "checked" : ""}> <span>Highlight line</span></label>
           <label class="wr-check"><input type="checkbox" class="wr-sym" ${CFG.readSymbols !== false ? "checked" : ""}> <span>Read symbols ( ) ; / &hellip;</span></label>
           <label class="wr-check"><input type="checkbox" class="wr-autonext" ${CFG.autoNext !== false ? "checked" : ""}> <span>Auto-play next chapter</span></label>
+          <label class="wr-check"><input type="checkbox" class="wr-bgplay" ${CFG.bgPlay !== false ? "checked" : ""}> <span>Keep playing in background (screen off)</span></label>
         </div>
       </div>`;
   }
@@ -987,6 +1042,8 @@
     if (sym) sym.addEventListener("change", (e) => { CFG.readSymbols = e.target.checked; saveCfg(); if (W.speaking) speakFrom(W.blockIdx); });
     const autonext = bar.querySelector(".wr-autonext");
     if (autonext) autonext.addEventListener("change", (e) => { CFG.autoNext = e.target.checked; saveCfg(); });
+    const bgplay = bar.querySelector(".wr-bgplay");
+    if (bgplay) bgplay.addEventListener("change", (e) => { CFG.bgPlay = e.target.checked; saveCfg(); syncMedia(); });
     const voice = bar.querySelector(".wr-voice");
     voice.addEventListener("change", (e) => {
       const i = parseInt(e.target.value, 10);
@@ -997,6 +1054,7 @@
   function updatePlayBtns() {
     const playing = W.speaking && !W.paused;
     document.querySelectorAll('#wr-root [data-tts="play"]').forEach((b) => { b.textContent = playing ? "⏸" : "▶"; });
+    syncMedia();
   }
 
   // ---- Site adapters (Kakuyomu, wtr-lab, …) for clean chapter text ----
