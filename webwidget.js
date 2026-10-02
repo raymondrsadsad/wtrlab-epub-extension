@@ -695,12 +695,25 @@
     if (m) return "Chapter " + m[1];
     return raw.slice(0, 80) || "Chapter";
   }
+  // The novel/series title (for the EPUB name), derived from the chapter heading with the
+  // "- Episode N / N화" suffix stripped and a doubled title ("Foo Foo") collapsed.
+  function currentNovelTitle() {
+    let raw = ((document.querySelector(".theme-novel-title, .view-title") || {}).textContent || document.title || "").replace(/\s+/g, " ").trim();
+    raw = raw.replace(/\s*[-–—]\s*(episode|chapter|ep|ch)\s*[.#-]?\s*\d+.*$/i, "")
+             .replace(/\s*[-–—]?\s*\d+\s*화.*$/, "")
+             .replace(/\s*[-–—]\s*(북토끼|뉴토끼|newtokki|booktoki)\s*(소설)?\s*$/i, "")
+             .trim();
+    const dup = raw.match(/^(.+?)\s+\1$/); if (dup) raw = dup[1].trim(); // "Foo Foo" -> "Foo"
+    return raw.slice(0, 90);
+  }
   async function downloadCurrentChapter() {
     try {
       setStatus("Preparing chapter…");
       const items = collectItems(pickContent());
       if (!items.length) { setStatus("No chapter text found to download."); return; }
-      const title = currentChapterTitle();
+      const chap = currentChapterTitle();                    // "Chapter N"
+      const novel = currentNovelTitle();                     // "I Alone Sword Master"
+      const title = (novel ? novel + " " : "") + chap;        // EPUB + filename name
       const images = [];
       const parts = [];
       let imgN = 0;
@@ -722,9 +735,9 @@
       }
       if (!parts.length) { setStatus("No readable content to download."); return; }
       const lang = ((W.translated && !W.showingOriginal) || CFG.autoTranslate) ? "en" : (document.documentElement.getAttribute("lang") || "en");
-      const meta = { title, author: "", lang };
+      const meta = { title, author: novel || "", lang };
       const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
-      const blob = buildEpub(meta, [{ title, xhtmlBody: parts.join("\n"), srcUrl: location.href }], images);
+      const blob = buildEpub(meta, [{ title: chap, xhtmlBody: parts.join("\n"), srcUrl: location.href }], images);
       const a = el("a"); a.href = URL.createObjectURL(blob); a.download = sanitizeFile(title) + ".epub";
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 15000);
@@ -1431,6 +1444,7 @@
         <span class="wr-head-btns">
           <button class="wr-btn wr-sm" data-ov="prev" title="Previous chapter">← Prev</button>
           <button class="wr-btn wr-sm" data-ov="next" title="Next chapter">Next →</button>
+          <button class="wr-icon" data-ov="dl" title="Download this chapter as EPUB">⬇</button>
           <button class="wr-icon" data-ov="display" title="Display settings (font, size, theme)">Aa</button>
           <button class="wr-icon" data-ov="close" title="Close reader">✕</button>
         </span>
@@ -1460,6 +1474,7 @@
     W.overlay = ov;
 
     ov.querySelector('[data-ov="close"]').addEventListener("click", closeReaderOverlay);
+    ov.querySelector('[data-ov="dl"]').addEventListener("click", downloadCurrentChapter);
     ov.querySelector('[data-ov="display"]').addEventListener("click", toggleOvDisplay);
     // Floating "back to top": show once the reader is scrolled down, jump to the top on tap.
     const ovScroll = ov.querySelector(".wr-ov-scroll"), ovTop = ov.querySelector('[data-ov="top"]');
