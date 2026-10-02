@@ -664,10 +664,18 @@
   }
   function collectTextNodes(root) {
     const nodes = [];
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(n) { return okTextNode(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; },
-    });
-    let n; while ((n = walker.nextNode())) nodes.push(n);
+    // A TreeWalker can't cross shadow boundaries, so walk the host tree AND recurse
+    // into every open shadow root. Some readers render the chapter prose inside a
+    // shadow root (e.g. newtoki's .theme-novel-content), which a plain body walk
+    // misses entirely — leaving the story untranslated while the menus turn English.
+    const walkRoot = (r) => {
+      const walker = document.createTreeWalker(r, NodeFilter.SHOW_TEXT, {
+        acceptNode(n) { return okTextNode(n) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; },
+      });
+      let n; while ((n = walker.nextNode())) nodes.push(n);
+      if (r.querySelectorAll) for (const el of r.querySelectorAll("*")) if (el.shadowRoot) walkRoot(el.shadowRoot);
+    };
+    walkRoot(root);
     return nodes;
   }
 
