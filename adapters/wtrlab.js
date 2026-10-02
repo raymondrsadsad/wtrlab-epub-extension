@@ -218,7 +218,25 @@ export function create() {
         if (d.requireTurnstile) throw new CaptchaError();
         throw new Error(d.error || "Chapter fetch failed");
       }
-      const inner = d.data.data;
+      // wtr-lab moved the chapter body out of /api/reader/get into a separate signed
+      // content URL — the get response is now { success, chapter, tasks, content_url }
+      // (previously the body sat at d.data.data). Fetch that URL for the encrypted body;
+      // its AES-GCM format is unchanged, so decryptBody still applies.
+      let inner;
+      if (d.content_url) {
+        const cres = await fetchT(new URL(d.content_url, API).href, { credentials: "include", headers: { Accept: "application/json" } });
+        const cd = await cres.json();
+        if (!cd || !cd.success || !cd.data || !cd.data.data) {
+          if (cd && cd.requireTurnstile) throw new CaptchaError();
+          throw new Error((cd && cd.error) || "Chapter content fetch failed");
+        }
+        inner = cd.data.data;
+      } else if (d.data && d.data.data) {
+        inner = d.data.data; // legacy inline shape (fallback)
+      } else {
+        if (d.chapter && d.chapter.locked) throw new Error("This chapter is locked.");
+        throw new Error("Chapter content URL missing.");
+      }
       const paras = await decryptBody(inner.body);
       const images = Array.isArray(inner.images) ? inner.images : [];
 
@@ -248,7 +266,7 @@ export function create() {
       }
 
       // chapter title
-      let title = inner.title || `Chapter ${chapter.no}`;
+      let title = inner.title || (d.chapter && d.chapter.title) || `Chapter ${chapter.no}`;
       if (service !== "ai" && /[一-鿿]/.test(title)) {
         try { title = (await translateAll([title], lang))[0]; } catch {}
       }
