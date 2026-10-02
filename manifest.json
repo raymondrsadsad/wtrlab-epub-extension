@@ -46,6 +46,7 @@
         "adapters/newtoki.js",
         "adapters/generic.js",
         "adapters/translate.js",
+        "epub.js",
         "icons/icon128.png"
       ],
       "matches": [

@@ -328,6 +328,7 @@
       <button class="wr-mini-btn" data-tts="prev" title="Previous">⏮</button>
       <button class="wr-mini-btn" data-tts="next" title="Next">⏭</button>
       <button class="wr-mini-btn" data-tts="stop" title="Stop">■</button>
+      <button class="wr-mini-btn wr-mini-dl" title="Download this chapter as EPUB">⬇</button>
       <button class="wr-mini-btn wr-mini-open" title="Open Web Reader">🌐</button>`;
 
     // expanded panel
@@ -384,6 +385,7 @@
     mini.querySelector('[data-tts="prev"]').addEventListener("click", () => stepLine(-1));
     mini.querySelector('[data-tts="next"]').addEventListener("click", () => stepLine(1));
     mini.querySelector('[data-tts="stop"]').addEventListener("click", () => { stopTts(); setStatus("Stopped."); });
+    mini.querySelector('.wr-mini-dl').addEventListener("click", (e) => { if (!W._dragged) downloadCurrentChapter(); });
     mini.querySelector('.wr-mini-open').addEventListener("click", (e) => { if (!W._dragged) togglePanel(true); });
     panel.addEventListener("click", onPanelClick);
     sel.addEventListener("change", (e) => { CFG.targetLang = e.target.value; saveCfg(); });
@@ -648,6 +650,89 @@
       if (t) out.push({ el: container, text: t });
     }
     return out;
+  }
+
+  // Ordered reader items ([{text}|{image}]) from a container, piercing shadow roots and
+  // keeping prose + inline images in document order — so Reader mode shows illustrations
+  // too (e.g. newtoki renders images as <figure class="novel-inline-image"><img>).
+  function collectItems(container) {
+    const nodes = deepQueryAll(container, "p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, img");
+    const items = [], seen = new Set();
+    for (const n of nodes) {
+      if (n.closest && (n.closest("#wr-root") || n.closest(SKIP_SEL))) continue;
+      if (n.tagName === "IMG") {
+        const src = n.getAttribute("src") || n.getAttribute("data-src") || n.getAttribute("data-original");
+        if (src && !/^data:image\/(gif|svg)/i.test(src)) { try { items.push({ image: new URL(src, location.href).href }); } catch (_) {} }
+        continue;
+      }
+      if (n.querySelector && n.querySelector("p, h1, h2, h3, h4, h5, h6, li, blockquote, dd")) continue; // not a leaf block
+      const t = (n.textContent || "").replace(/\s+/g, " ").trim();
+      if (t && t.length >= 2 && !seen.has(t)) { seen.add(t); items.push({ text: t }); }
+    }
+    return items;
+  }
+
+  // ---- Download just the CURRENT chapter as a one-chapter EPUB ----
+  // Uses whatever prose/images are shown on the page (so if you've translated it, the
+  // EPUB is English). Title + filename are "Chapter N" when a number is detectable.
+  function xesc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function sanitizeFile(s) { return String(s || "chapter").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "chapter"; }
+  function mimeToExt(m) { m = (m || "").toLowerCase(); if (m.includes("png")) return "png"; if (m.includes("webp")) return "webp"; if (m.includes("gif")) return "gif"; if (m.includes("svg")) return "svg"; return "jpg"; }
+  function currentChapterTitle() {
+    // Prefer the clean "… Chapter N" the page shows in .page-desc.
+    const pd = ((document.querySelector(".page-desc") || {}).textContent || "");
+    let m = pd.match(/chapter\s*(\d+(?:\.\d+)?)/i);
+    if (m) return "Chapter " + m[1];
+    // Else pull a number from the chapter title (try selectors in PRIORITY order —
+    // querySelector with a comma list returns document order, not selector order).
+    let raw = "";
+    for (const s of [".theme-novel-title", ".view-title", ".pg-title", ".view-content h1"]) {
+      const e = document.querySelector(s); const t = e && (e.textContent || "").replace(/\s+/g, " ").trim();
+      if (t) { raw = t; break; }
+    }
+    if (!raw) raw = (document.title || "").replace(/\s+/g, " ").trim();
+    m = raw.match(/(\d+(?:\.\d+)?)\s*화/) || raw.match(/(?:episode|chapter|ep|ch)\s*[.#-]?\s*(\d+(?:\.\d+)?)/i);
+    if (m) return "Chapter " + m[1];
+    return raw.slice(0, 80) || "Chapter";
+  }
+  async function downloadCurrentChapter() {
+    try {
+      setStatus("Preparing chapter…");
+      const items = collectItems(pickContent());
+      if (!items.length) { setStatus("No chapter text found to download."); return; }
+      const title = currentChapterTitle();
+      const images = [];
+      const parts = [];
+      let imgN = 0;
+      for (const it of items) {
+        if (it.text) { parts.push(`<p>${xesc(it.text)}</p>`); continue; }
+        if (it.image) {
+          try {
+            const r = await fetch(it.image, { credentials: "include" });
+            if (!r.ok) continue;
+            const buf = new Uint8Array(await r.arrayBuffer());
+            if (!buf.length) continue;
+            const mime = (r.headers.get("content-type") || "").split(";")[0] || "image/jpeg";
+            imgN++;
+            const name = `images/img${imgN}.${mimeToExt(mime)}`;
+            images.push({ id: `img${imgN}`, name, data: buf, mime });
+            parts.push(`<p><img src="${name}" alt=""/></p>`);
+          } catch (_) { /* skip an image that won't load */ }
+        }
+      }
+      if (!parts.length) { setStatus("No readable content to download."); return; }
+      const lang = ((W.translated && !W.showingOriginal) || CFG.autoTranslate) ? "en" : (document.documentElement.getAttribute("lang") || "en");
+      const meta = { title, author: "", lang };
+      const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
+      const blob = buildEpub(meta, [{ title, xhtmlBody: parts.join("\n"), srcUrl: location.href }], images);
+      const a = el("a"); a.href = URL.createObjectURL(blob); a.download = sanitizeFile(title) + ".epub";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 15000);
+      setStatus(`Downloaded “${title}”.`);
+    } catch (e) {
+      console.warn("[WebReader] chapter download failed", e);
+      setStatus("⚠ " + ((e && e.message) || "Download failed."));
+    }
   }
 
   // ================================================================= translation
@@ -1286,7 +1371,9 @@
   // load, then navigate the real page to the sibling chapter.
   function navigateToChapter(url, autoplay) {
     if (!url) return;
-    try { sessionStorage.setItem("wrReopenReader", JSON.stringify({ autoplay: !!autoplay, t: Date.now() })); } catch (_) {}
+    // Carry the current translate state forward so the next chapter opens translated too.
+    const translate = !!(W.translated && !W.showingOriginal) || !!CFG.autoTranslate;
+    try { sessionStorage.setItem("wrReopenReader", JSON.stringify({ autoplay: !!autoplay, translate, t: Date.now() })); } catch (_) {}
     setStatus("Loading chapter…");
     location.assign(url);
   }
@@ -1306,7 +1393,8 @@
         clearInterval(timer);
         if (!blocks.length) return;
         try {
-          await openReaderOverlay();
+          if (intent.translate) { try { await translatePage(); } catch (_) {} } // translate in place first
+          await openReaderOverlay(); // reads the (now translated) prose + inline images
           if (intent.autoplay && W.ttsHost === "overlay" && W.blocks.length) speakFrom(0);
         } catch (_) {}
       }
@@ -1321,12 +1409,14 @@
     if (adapted && adapted.items && adapted.items.length) { buildOverlay(adapted.title || document.title, adapted.items, adapted.nav); return; }
     // Fallback (adapter unavailable / unrecognised site): build the clean overlay from the
     // page's visible content as-is — no forced translation, so it can't hang or stay blank.
-    const src = pageReadableBlocks();
-    if (!src.length) { setStatus("No readable text to show in the reader."); return; }
+    // Collect prose AND inline images (shadow-aware), in order; fall back to text-only.
+    let items = collectItems(pickContent());
+    if (!items.length) items = pageReadableBlocks().map((b) => ({ text: b.text }));
+    if (!items.length) { setStatus("No readable text to show in the reader."); return; }
     const title = (document.querySelector("h1, h2") || {}).textContent || document.title || "Reading";
     // Chapter text isn't fetchable here, but the page exposes its own Prev/Next links —
     // wire them so reader-mode Prev/Next navigate the real page (and reopen the reader).
-    buildOverlay(title, src.map((b) => ({ text: b.text })), detectSiteChapterNav());
+    buildOverlay(title, items, detectSiteChapterNav());
   }
 
   // Render a clean reading overlay from items ([{text}|{image}]) and start the reader.
