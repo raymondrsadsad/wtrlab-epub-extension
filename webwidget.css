@@ -63,7 +63,11 @@
 /* ---- expanded panel ---- */
 #wr-root .wr-panel {
   width: 300px; max-width: calc(100vw - 24px);
-  max-height: calc(100vh - 36px); overflow-y: auto;
+  /* Cap to the VISIBLE viewport and scroll the rest. 100dvh (dynamic viewport)
+     excludes the mobile URL bar, so the panel no longer overflows off the top. */
+  max-height: calc(100vh - 36px);
+  max-height: calc(100dvh - 36px);
+  overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   background: var(--wr-bg);
   border: 1px solid var(--wr-border);
   border-radius: 14px;
@@ -75,6 +79,8 @@
   background: linear-gradient(180deg, var(--wr-bg), var(--wr-bg2));
   border-bottom: 1px solid var(--wr-border);
   cursor: move; touch-action: none; user-select: none;
+  /* Keep Collapse/Close reachable while the panel body scrolls. */
+  position: sticky; top: 0; z-index: 2;
 }
 #wr-root .wr-brand { font-weight: 600; font-size: 14px; }
 #wr-root .wr-head-btns { display: inline-flex; gap: 4px; }
