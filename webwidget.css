@@ -63,10 +63,10 @@
 /* ---- expanded panel ---- */
 #wr-root .wr-panel {
   width: 300px; max-width: calc(100vw - 24px);
-  /* Cap to the VISIBLE viewport and scroll the rest. 100dvh (dynamic viewport)
-     excludes the mobile URL bar, so the panel no longer overflows off the top. */
-  max-height: calc(100vh - 36px);
-  max-height: calc(100dvh - 36px);
+  /* Take at most half the (visible) screen so the page stays readable behind it;
+     scroll the rest. 100dvh excludes the mobile URL bar so nothing clips off-screen. */
+  max-height: 50vh;
+  max-height: 50dvh;
   overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
   background: var(--wr-bg);
   border: 1px solid var(--wr-border);

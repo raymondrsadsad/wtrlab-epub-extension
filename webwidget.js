@@ -847,6 +847,21 @@
     }
   }
 
+  // Translate whatever UNTRANSLATED text is on the page right now, without the
+  // "already translated" short-circuit. Needed because the on-load auto-translate often
+  // runs before a reader's async prose (e.g. newtoki's shadow content) has rendered; that
+  // first pass flips W.translated=true on just the menus, so a later translatePage() would
+  // bail and leave the story in its original language. applyTranslationTo only touches nodes
+  // it hasn't handled yet, so calling this repeatedly is cheap.
+  async function translateNewNodes() {
+    if (!extAlive() || W.showingOriginal) return 0;
+    try {
+      const n = await applyTranslationTo(collectTextNodes(document.body));
+      if (n) { W.translated = true; startTxObserver(); const orig = W.panel && W.panel.querySelector('[data-act="original"]'); if (orig) { orig.disabled = false; orig.textContent = "Show original"; } }
+      return n;
+    } catch (e) { console.warn("[WebReader] translateNewNodes failed", e); return 0; }
+  }
+
   // Watch for text added after the first pass (drawers, SPA chapter nav, lazy lists) and
   // translate it too. Debounced; guarded so our own writes never feed back in.
   function reconnectTxObserver() {
@@ -1406,7 +1421,7 @@
         clearInterval(timer);
         if (!blocks.length) return;
         try {
-          if (intent.translate) { try { await translatePage(); } catch (_) {} } // translate in place first
+          if (intent.translate) { try { await translateNewNodes(); } catch (_) {} } // translate the freshly-rendered prose first
           await openReaderOverlay(); // reads the (now translated) prose + inline images
           if (intent.autoplay && W.ttsHost === "overlay" && W.blocks.length) speakFrom(0);
         } catch (_) {}
@@ -1422,6 +1437,10 @@
     if (adapted && adapted.items && adapted.items.length) { buildOverlay(adapted.title || document.title, adapted.items, adapted.nav); return; }
     // Fallback (adapter unavailable / unrecognised site): build the clean overlay from the
     // page's visible content as-is — no forced translation, so it can't hang or stay blank.
+    // If translation is on (or the page was translated), translate the freshly-rendered
+    // prose before snapshotting it into the overlay — otherwise Reader mode shows the
+    // original language even though auto-translate is enabled.
+    if (CFG.autoTranslate || (W.translated && !W.showingOriginal)) { try { await translateNewNodes(); } catch (_) {} }
     // Collect prose AND inline images (shadow-aware), in order; fall back to text-only.
     let items = collectItems(pickContent());
     if (!items.length) items = pageReadableBlocks().map((b) => ({ text: b.text }));
