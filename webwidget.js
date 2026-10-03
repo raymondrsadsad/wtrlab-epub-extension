@@ -59,7 +59,7 @@
     ["zh-CN", "Chinese"], ["id", "Indonesian"], ["vi", "Vietnamese"], ["ar", "Arabic"],
     ["hi", "Hindi"], ["tl", "Filipino"],
   ];
-  const CFG = { enabled: false, autoTranslate: false, targetLang: "en", rate: 1, sentPause: 250, voiceName: "", follow: true, highlight: true, readSymbols: true, autoNext: true, bgPlay: true, pos: null, ttsCollapsed: false,
+  const CFG = { enabled: false, autoTranslate: false, targetLang: "en", rate: 1, sentPause: 250, voiceName: "", follow: true, highlight: true, readSymbols: true, autoNext: true, bgPlay: true, mediaNotif: true, pos: null, ttsCollapsed: false,
     // Page zoom: unlockZoom re-enables native pinch-zoom on sites that block it; zoomByHost is
     // a remembered CSS-zoom factor per hostname (set from the widget's Zoom control).
     unlockZoom: true, zoomByHost: {},
@@ -731,22 +731,51 @@
     }
     return { xhtmlBody: parts.join("\n"), images };
   }
-  function blobToDataUrl(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); }); }
-  // Save via the service worker's download manager first — it runs independently of the page, so
-  // a bulk crawl navigating to the next chapter can't cancel the save (and mobile won't block
-  // repeated non-gesture downloads). Fall back to an in-page <a download> if the SW path fails.
-  async function downloadBlob(blob, filename) {
-    try {
-      const url = await blobToDataUrl(blob);
-      const ok = await new Promise((res) => { try { chrome.runtime.sendMessage({ type: "WR_DOWNLOAD", url, filename }, (r) => { if (chrome.runtime.lastError) return res(false); res(!!(r && r.ok)); }); } catch (_) { res(false); } });
-      if (ok) return true;
-    } catch (_) {}
+  // Save a blob via an in-page <a download>. This MUST be called synchronously inside a user
+  // gesture (a tap) — mobile browsers (Quetta) only show their "where to save" prompt for a
+  // gesture-initiated download, and silently drop downloads triggered from async/background code.
+  // So we build files ahead of time and only call this from a Save-button tap handler.
+  function saveBlob(blob, filename) {
     try {
       const a = el("a"); a.href = URL.createObjectURL(blob); a.download = filename;
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 15000);
+      setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 20000);
       return true;
     } catch (_) { return false; }
+  }
+  // Present finished file(s) with a Save button; the tap handler saves synchronously so the
+  // browser's download prompt actually appears. `pending` is normally a single file (a combined
+  // EPUB, or a .zip of per-chapter EPUBs) so one tap = one download = one prompt.
+  function offerDownloads(pending, label) {
+    hideCrawlProgress();
+    if (!pending || !pending.length) { setStatus("Nothing to download."); return; }
+    const p = el("div", "wr-crawl");
+    const txt = label || (pending.length === 1 ? "File ready" : pending.length + " files ready");
+    p.innerHTML = `<div class="wr-crawl-text">✅ ${txt}</div><button class="wr-btn wr-primary wr-sm" data-crawl="save">⬇ Save</button><button class="wr-btn wr-sm" data-crawl="dismiss">✕</button>`;
+    W.root.appendChild(p);
+    p.querySelector('[data-crawl="save"]').addEventListener("click", () => {
+      let ok = 0; for (const d of pending) { if (saveBlob(d.blob, d.filename)) ok++; } // sync — stays in the gesture
+      setStatus(`Saved ${ok} file(s).`); p.remove();
+    });
+    p.querySelector('[data-crawl="dismiss"]').addEventListener("click", () => p.remove());
+  }
+  // Build the finished download(s) from collected chapter data. combined → one EPUB; individual →
+  // one .zip of per-chapter EPUBs (one file = one gesture download, reliable on mobile).
+  async function buildPending(dataArr, output, novel) {
+    if (!dataArr || !dataArr.length) return [];
+    const { buildEpub, buildZip } = await import(chrome.runtime.getURL("epub.js"));
+    const toImgs = (arr) => (arr || []).map((im) => (im.data ? im : { id: im.id, name: im.name, mime: im.mime, data: b64ToU8(im.b64) }));
+    if (output === "combined") {
+      const chapters = dataArr.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl }));
+      const images = dataArr.flatMap((c) => toImgs(c.images));
+      return [{ blob: buildEpub({ title: novel, author: novel, lang: "en" }, chapters, images), filename: sanitizeFile(novel) + ".epub" }];
+    }
+    const entries = [];
+    for (const c of dataArr) {
+      const epubBlob = buildEpub({ title: (novel ? novel + " " : "") + c.title, author: novel, lang: "en" }, [{ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl }], toImgs(c.images));
+      entries.push({ name: sanitizeFile((novel ? novel + " " : "") + c.title) + ".epub", data: new Uint8Array(await epubBlob.arrayBuffer()) });
+    }
+    return [{ blob: new Blob([buildZip(entries)], { type: "application/zip" }), filename: sanitizeFile(novel) + " chapters.zip" }];
   }
   function readerLang() {
     return ((W.translated && !W.showingOriginal) || CFG.autoTranslate) ? "en" : (document.documentElement.getAttribute("lang") || "en");
@@ -776,7 +805,7 @@
       const meta = { title, author: novel || "", lang: readerLang() };
       const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
       const blob = buildEpub(meta, [{ title: chap, xhtmlBody, srcUrl: location.href }], images);
-      await downloadBlob(blob, sanitizeFile(title) + ".epub");
+      saveBlob(blob, sanitizeFile(title) + ".epub");
       setStatus(`Downloaded “${title}”.`);
     } catch (e) {
       console.warn("[WebReader] chapter download failed", e);
@@ -1155,9 +1184,12 @@
   // Keep the keep-alive audio + OS media controls in lock-step with TTS state. Called from
   // updatePlayBtns, which every start/pause/stop path already routes through.
   function syncMedia() {
-    if (CFG.bgPlay === false) { mediaKeepAlive(false); mediaState("none"); return; }
-    if (W.speaking) { mediaSetup(); mediaMeta(); mediaKeepAlive(true); mediaState(W.paused ? "paused" : "playing"); }
-    else { mediaKeepAlive(false); mediaState("none"); }
+    // Keep-alive audio is needed for background play AND for the notification/lock-screen player;
+    // the Media Session UI itself is shown only when "Show player in notification" is on.
+    const keepAlive = W.speaking && (CFG.bgPlay !== false || CFG.mediaNotif !== false);
+    mediaKeepAlive(keepAlive);
+    if (W.speaking && CFG.mediaNotif !== false) { mediaSetup(); mediaMeta(); mediaState(W.paused ? "paused" : "playing"); }
+    else mediaState("none");
   }
 
   // Voices
@@ -1209,6 +1241,7 @@
           <label class="wr-check"><input type="checkbox" class="wr-sym" ${CFG.readSymbols !== false ? "checked" : ""}> <span>Read symbols ( ) ; / &hellip;</span></label>
           <label class="wr-check"><input type="checkbox" class="wr-autonext" ${CFG.autoNext !== false ? "checked" : ""}> <span>Auto-play next chapter</span></label>
           <label class="wr-check"><input type="checkbox" class="wr-bgplay" ${CFG.bgPlay !== false ? "checked" : ""}> <span>Keep playing in background (screen off)</span></label>
+          <label class="wr-check"><input type="checkbox" class="wr-medianotif" ${CFG.mediaNotif !== false ? "checked" : ""}> <span>Show player in notification / lock screen</span></label>
         </div>
       </div>`;
   }
@@ -1247,6 +1280,8 @@
     if (autonext) autonext.addEventListener("change", (e) => { CFG.autoNext = e.target.checked; saveCfg(); });
     const bgplay = bar.querySelector(".wr-bgplay");
     if (bgplay) bgplay.addEventListener("change", (e) => { CFG.bgPlay = e.target.checked; saveCfg(); syncMedia(); });
+    const medianotif = bar.querySelector(".wr-medianotif");
+    if (medianotif) medianotif.addEventListener("change", (e) => { CFG.mediaNotif = e.target.checked; saveCfg(); syncMedia(); });
     const voice = bar.querySelector(".wr-voice");
     voice.addEventListener("change", (e) => {
       const i = parseInt(e.target.value, 10);
@@ -1660,15 +1695,7 @@
   function getCrawlState() { try { return JSON.parse(sessionStorage.getItem("wrCrawl") || "null"); } catch (_) { return null; } }
   function clearCrawlData() { return new Promise((res) => { try { chrome.storage.local.set({ wrCrawlChapters: [] }, res); } catch (_) { res(); } }); }
   function appendCrawlData(entry) { return new Promise((res) => { try { chrome.storage.local.get("wrCrawlChapters", (o) => { const arr = (o && o.wrCrawlChapters) || []; arr.push(entry); chrome.storage.local.set({ wrCrawlChapters: arr }, res); }); } catch (_) { res(); } }); }
-  async function finalizeCombined(novel) {
-    const data = await new Promise((res) => { try { chrome.storage.local.get("wrCrawlChapters", (o) => res((o && o.wrCrawlChapters) || [])); } catch (_) { res([]); } });
-    if (!data.length) return;
-    const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
-    const chapters = data.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl }));
-    const images = data.flatMap((c) => (c.images || []).map((im) => ({ id: im.id, name: im.name, mime: im.mime, data: b64ToU8(im.b64) })));
-    await downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, chapters, images), sanitizeFile(novel) + ".epub");
-    await clearCrawlData();
-  }
+  function loadCrawlData() { return new Promise((res) => { try { chrome.storage.local.get("wrCrawlChapters", (o) => res((o && o.wrCrawlChapters) || [])); } catch (_) { res([]); } }); }
 
   function wantTranslateFor(lang) {
     return lang === "en" || (lang === "match" && ((W.translated && !W.showingOriginal) || CFG.autoTranslate));
@@ -1688,11 +1715,10 @@
     else location.assign(queue[0].url);
   }
 
-  // Adapter sites: fetch each chapter in place (fast, no navigation).
+  // Adapter sites: fetch each chapter in place (fast, no navigation), accumulate, then offer Save.
   async function crawlFetch(queue, opts, novel) {
     showCrawlProgress(0, queue.length, queue[0].title);
-    const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
-    const collected = [];
+    const data = [];
     for (let i = 0; i < queue.length; i++) {
       if (W._crawlCancel) { hideCrawlProgress(); setStatus("Download cancelled."); return; }
       const ch = queue[i];
@@ -1701,17 +1727,14 @@
       try { W.adapterUrl = null; W.adapterContent = undefined; content = await getAdapterContent(ch.url); } catch (_) {}
       if (!content || !content.items || !content.items.length) continue;
       const title = content.title || ch.title || ("Chapter " + (ch.no != null ? ch.no : i + 1));
-      const { xhtmlBody, images } = await buildChapterParts(content.items, opts.output === "combined" ? `c${i}_` : "");
-      if (!xhtmlBody) continue;
-      if (opts.output === "individual") {
-        await downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + title, author: novel, lang: "en" }, [{ title, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + title) + ".epub");
-        await sleep(150);
-      } else collected.push({ title, xhtmlBody, images, srcUrl: ch.url });
+      const { xhtmlBody, images } = await buildChapterParts(content.items, `c${i}_`);
+      if (xhtmlBody) data.push({ title, xhtmlBody, images, srcUrl: ch.url });
     }
-    if (opts.output === "combined" && collected.length) {
-      await downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, collected.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl })), collected.flatMap((c) => c.images)), sanitizeFile(novel) + ".epub");
-    }
-    hideCrawlProgress(); setStatus("Download complete.");
+    if (W._crawlCancel) { hideCrawlProgress(); setStatus("Download cancelled."); return; }
+    if (!data.length) { hideCrawlProgress(); setStatus("Nothing could be downloaded."); return; }
+    setStatus("Building EPUB…");
+    const pending = await buildPending(data, opts.output, novel);
+    offerDownloads(pending, `${data.length} chapter(s) ready`);
   }
 
   // newtoki/pageNav: resume the navigate-scrape crawl after each page load.
@@ -1721,11 +1744,15 @@
     if (!st || (Date.now() - st.t) > 6 * 3600 * 1000) { clearCrawl(); return; }
     W._crawlCancel = false;
     showCrawlProgress(st.idx, st.queue.length, st.queue[st.idx] && st.queue[st.idx].title);
+    // Only scrape a real chapter page (newtoki sometimes serves an ad/listing interstitial —
+    // never save that as a "chapter"). On newtoki a chapter always ships theme-novel-viewer-data.
+    const needsVD = /(^|\.)(newtoki|booktoki|manatoki|mantoki)\d*\./i.test(location.hostname);
+    const isChapter = () => !needsVD || !!document.getElementById("theme-novel-viewer-data") || !!document.querySelector(".theme-novel-content");
     // wait for the chapter prose to render
     let blocks = [], tries = 0;
     while (tries < 60) {
       try { blocks = pageReadableBlocks(); } catch (_) {}
-      if (blocks.length > 2) break;
+      if (blocks.length > 2 && isChapter()) break;
       if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
       if (/Access denied/i.test(document.title)) {
         if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
@@ -1737,20 +1764,15 @@
     }
     const ch = st.queue[st.idx];
     const novel = st.novel || currentNovelTitle();
-    if (blocks.length > 2) {
+    // Scrape + accumulate this chapter (download happens once at the very end, so the per-chapter
+    // navigation can't cancel it and the save is one gesture → one browser download prompt).
+    if (blocks.length > 2 && isChapter()) {
       let items = collectItems(pickContent());
       if (wantTranslateFor(st.opts.lang)) { try { items = await translateItemsText(items); } catch (_) {} } // translate the scraped text directly
       const chapTitle = currentChapterTitle() || ch.title || ("Chapter " + (ch.no != null ? ch.no : st.idx + 1));
       if (items.length) {
-        const { xhtmlBody, images } = await buildChapterParts(items, st.opts.output === "combined" ? `c${st.idx}_` : "");
-        if (xhtmlBody) {
-          if (st.opts.output === "individual") {
-            const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
-            await downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + chapTitle, author: novel, lang: wantTranslateFor(st.opts.lang) ? "en" : readerLang() }, [{ title: chapTitle, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + chapTitle) + ".epub");
-          } else {
-            await appendCrawlData({ title: chapTitle, xhtmlBody, images: images.map((im) => ({ id: im.id, name: im.name, mime: im.mime, b64: u8ToB64(im.data) })), srcUrl: ch.url });
-          }
-        }
+        const { xhtmlBody, images } = await buildChapterParts(items, `c${st.idx}_`);
+        if (xhtmlBody) await appendCrawlData({ no: ch.no, title: chapTitle, xhtmlBody, images: images.map((im) => ({ id: im.id, name: im.name, mime: im.mime, b64: u8ToB64(im.data) })), srcUrl: ch.url });
       }
     }
     if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
@@ -1763,8 +1785,12 @@
       location.assign(st.queue[st.idx].url);
     } else {
       clearCrawl();
-      if (st.opts.output === "combined") { setStatus("Building combined EPUB…"); await finalizeCombined(novel); }
-      hideCrawlProgress(); setStatus(`Download complete — ${st.queue.length} chapter(s).`);
+      hideCrawlProgress(); setStatus("Building EPUB…");
+      const dataArr = await loadCrawlData();
+      await clearCrawlData();
+      if (!dataArr.length) { setStatus("Nothing could be downloaded (no chapters rendered)."); return; }
+      const pending = await buildPending(dataArr, st.opts.output, novel);
+      offerDownloads(pending, `${dataArr.length} chapter(s) ready`);
     }
   }
 

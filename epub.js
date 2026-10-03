@@ -24,7 +24,7 @@ function toBytes(data) {
 }
 
 // ---- ZIP (store only) ----
-function buildZip(files) {
+export function buildZip(files) {
   // files: [{ name, data(string|Uint8Array) }]
   const chunks = [];
   const central = [];
