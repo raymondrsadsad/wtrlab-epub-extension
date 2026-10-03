@@ -259,6 +259,8 @@
 #wr-root .wr-cr-ic.fail { color: #e5675f; }
 #wr-root .wr-cr-t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #wr-root .wr-crawl.wr-min .wr-cr-list { display: none; } /* minimized: just the header bar */
+#wr-root .wr-crawl.wr-min .wr-cr-bar { display: none; }
+#wr-root .wr-cr-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--wr-muted); padding: 2px 0; }
 #wr-root .wr-ov-tts {
   position: sticky; bottom: 0;
   background: var(--wr-bg2); border-top: 1px solid var(--wr-border);

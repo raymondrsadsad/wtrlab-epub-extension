@@ -1357,6 +1357,9 @@
       }
     } catch (e) {
       console.warn("[WebReader] adapter path failed — using generic extractor", e);
+      // Surface a Turnstile/Cloudflare challenge distinctly so the bulk crawl can pause and let
+      // the user clear it (rather than silently marking every chapter as a plain failure).
+      if (e && (e.name === "CaptchaError" || /turnstile|captcha|verification/i.test(e.message || ""))) { W.adapterContent = undefined; return { captcha: true }; }
       content = null;
     }
     W.adapterContent = content;
@@ -1720,13 +1723,30 @@
     const status = await loadCrawlStatus();
     const dataArr = await loadCrawlData();
     const ok = status.filter((s) => s.ok).length, fail = status.length - ok;
+    const hasCaptcha = status.some((s) => !s.ok && s.captcha);
     let pending = [];
     try { pending = dataArr.length ? await buildPending(dataArr, opts.output, novel) : []; } catch (e) { console.warn("[WebReader] build failed", e); }
-    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext">Done — ${ok} ok${fail ? `, ${fail} failed` : ""}</span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="min">—</button><button class="wr-btn wr-sm wr-primary" data-crawl="save" ${pending.length ? "" : "disabled"}>⬇ Save</button><button class="wr-btn wr-sm" data-crawl="close">✕</button></span></div><div class="wr-cr-list">${statusRowsHtml(status, true)}</div>`;
+    const bar = fail ? `<div class="wr-cr-bar">${hasCaptcha ? "⚠ Site asked for a captcha — tap Solve, clear it, then Retry failed. " : ""}<button class="wr-btn wr-sm" data-crawl="retryall">Retry failed (${fail})</button>${hasCaptcha ? '<button class="wr-btn wr-sm" data-crawl="solve">Solve captcha</button>' : ""}</div>` : "";
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext">Done — ${ok} ok${fail ? `, ${fail} failed` : ""}</span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="min">—</button><button class="wr-btn wr-sm wr-primary" data-crawl="save" ${pending.length ? "" : "disabled"}>⬇ Save</button><button class="wr-btn wr-sm" data-crawl="close">✕</button></span></div>${bar}<div class="wr-cr-list">${statusRowsHtml(status, true)}</div>`;
     wireMin(p);
     p.querySelector('[data-crawl="close"]').addEventListener("click", () => { p.remove(); clearCrawlData(); });
     p.querySelector('[data-crawl="save"]').addEventListener("click", () => { let n = 0; for (const d of pending) { if (saveBlob(d.blob, d.filename)) n++; } setStatus(`Saved ${n} file(s).`); }); // sync in gesture; pending pre-built
     p.querySelectorAll("[data-retry]").forEach((btn) => btn.addEventListener("click", () => retryChapter(+btn.dataset.retry, novel, opts, engine)));
+    const ra = p.querySelector('[data-crawl="retryall"]'); if (ra) ra.addEventListener("click", () => retryFailed(novel, opts, engine));
+    const sv = p.querySelector('[data-crawl="solve"]'); if (sv) sv.addEventListener("click", () => { const f = status.find((s) => !s.ok); if (f) { try { window.open(f.url, "_blank"); } catch (_) { location.href = f.url; } setStatus("Solve the verification in the opened tab, then tap “Retry failed”."); } });
+  }
+  // Retry every failed chapter (mass). Keeps the OK chapters; upserts the failed ones by seq.
+  async function retryFailed(novel, opts, engine) {
+    const status = await loadCrawlStatus();
+    const failed = status.filter((s) => !s.ok);
+    if (!failed.length) return;
+    W._crawlCancel = false; clearCancel(); clearPause();
+    const queue = failed.map((s) => ({ url: s.url, no: s.no, title: s.title, seq: s.seq }));
+    if (engine === "fetch") { await crawlFetch(queue, opts, novel); return; } // re-fetch in place, re-renders results
+    saveCrawl({ queue, idx: 0, opts, novel, owner: myId(), t: Date.now() });
+    setStatus("Retrying failed…");
+    if (stripQ(location.href) === stripQ(queue[0].url)) resumeCrawl();
+    else location.assign(queue[0].url);
   }
 
   // ---- wait for the chapter prose to actually render (not menus/ads/"Loading text") ----
@@ -1776,19 +1796,20 @@
   }
 
   // Adapter sites: fetch each chapter in place (fast, no navigation), store status, then results.
+  // queue items may carry `seq` (mass-retry of specific chapters); else the loop index is the seq.
   async function crawlFetch(queue, opts, novel) {
     for (let i = 0; i < queue.length; i++) {
       if (W._crawlCancel || cancelRequested()) { clearCancel(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
-      const ch = queue[i];
+      const ch = queue[i]; const seq = ch.seq != null ? ch.seq : i;
       await renderProgressPanel({ idx: i, total: queue.length, title: ch.title });
       let content = null;
       try { W.adapterUrl = null; W.adapterContent = undefined; content = await getAdapterContent(ch.url); } catch (_) {}
-      const title = (content && content.title) || ch.title || ("Chapter " + (ch.no != null ? ch.no : i + 1));
+      const title = (content && content.title) || ch.title || ("Chapter " + (ch.no != null ? ch.no : seq + 1));
       if (content && content.items && content.items.length) {
-        const { xhtmlBody, images } = await buildChapterParts(content.items, `c${i}_`);
-        if (xhtmlBody) { await upsertCrawlData({ seq: i, no: ch.no, title, xhtmlBody, images, srcUrl: ch.url }); await upsertCrawlStatus({ seq: i, no: ch.no, title, url: ch.url, ok: true }); continue; }
+        const { xhtmlBody, images } = await buildChapterParts(content.items, `c${seq}_`);
+        if (xhtmlBody) { await upsertCrawlData({ seq, no: ch.no, title, xhtmlBody, images, srcUrl: ch.url }); await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: true }); continue; }
       }
-      await upsertCrawlStatus({ seq: i, no: ch.no, title, url: ch.url, ok: false });
+      await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: false, captcha: !!(content && content.captcha) });
     }
     await renderResultsPanel(novel, opts, "fetch");
   }
@@ -1843,6 +1864,7 @@
 
     const total = st.queue ? st.queue.length : 0;
     const cur = st.queue ? st.queue[st.idx] : { url: location.href };
+    const seq = (cur && cur.seq != null) ? cur.seq : st.idx; // mass-retry queue carries original seq
     await renderProgressPanel({ idx: st.idx, total, title: cur && cur.title });
     let w = await waitForChapter();
     if (w === "cancel") { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
@@ -1852,8 +1874,8 @@
       w = "timeout"; // give up on this chapter
     }
     st.deniedTries = 0;
-    if (w === "ok") await scrapeAndStore(st.idx, cur && cur.no, location.href, st.opts);
-    else await upsertCrawlStatus({ seq: st.idx, no: cur && cur.no, title: (cur && cur.title) || currentChapterTitle() || ("Chapter " + (st.idx + 1)), url: location.href, ok: false });
+    if (w === "ok") await scrapeAndStore(seq, cur && cur.no, location.href, st.opts);
+    else await upsertCrawlStatus({ seq, no: cur && cur.no, title: (cur && cur.title) || currentChapterTitle() || ("Chapter " + (seq + 1)), url: location.href, ok: false });
     if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
 
     // Decide the next chapter.
