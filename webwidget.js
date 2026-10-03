@@ -1786,7 +1786,7 @@
       saveCrawl({ follow: true, idx: 0, opts, novel, owner, t: Date.now(), max: 5000 });
       resumeCrawl(); return;
     }
-    const queue = idxs.map((i) => ({ url: chapters[i].url, no: chapters[i].no, title: chapters[i].title }));
+    const queue = idxs.map((i, k) => ({ url: chapters[i].url, no: chapters[i].no, title: chapters[i].title, seq: k }));
     if (!queue.length) return;
     await clearCrawlData();
     if (!opts.pageNav) return crawlFetch(queue, opts, novel); // adapter sites: fetch loop (no reload)
@@ -1804,14 +1804,62 @@
       await renderProgressPanel({ idx: i, total: queue.length, title: ch.title });
       let content = null;
       try { W.adapterUrl = null; W.adapterContent = undefined; content = await getAdapterContent(ch.url); } catch (_) {}
+      // Captcha → pause the WHOLE crawl right here (don't burn the rest as failures). The captcha'd
+      // chapter stays at the front of the remaining queue so it's retried (not skipped) on resume.
+      if (content && content.captcha) {
+        saveCrawl({ engine: "fetch", queue: queue.slice(i), opts, novel, owner: myId(), captchaPaused: true, captchaUrl: ch.url, t: Date.now() });
+        await renderCaptchaPanel(novel, opts);
+        return;
+      }
       const title = (content && content.title) || ch.title || ("Chapter " + (ch.no != null ? ch.no : seq + 1));
       if (content && content.items && content.items.length) {
         const { xhtmlBody, images } = await buildChapterParts(content.items, `c${seq}_`);
         if (xhtmlBody) { await upsertCrawlData({ seq, no: ch.no, title, xhtmlBody, images, srcUrl: ch.url }); await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: true }); continue; }
       }
-      await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: false, captcha: !!(content && content.captcha) });
+      await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: false });
     }
+    clearCrawl(); // a fully-finished fetch crawl needs no resumable state
     await renderResultsPanel(novel, opts, "fetch");
+  }
+
+  // Captcha pause panel: like the progress panel but with Open-captcha / Resume / Cancel.
+  async function renderCaptchaPanel(novel, opts) {
+    const p = crawlPanelEl();
+    const status = await loadCrawlStatus();
+    const ok = status.filter((s) => s.ok).length;
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext">⚠ Paused — captcha (${ok} done)</span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="min">—</button><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button></span></div><div class="wr-cr-bar">The site needs a verification. Tap <b>Open captcha</b>, clear it, and it resumes automatically. <button class="wr-btn wr-sm wr-primary" data-crawl="opencap">Open captcha</button><button class="wr-btn wr-sm" data-crawl="resumecap">Resume now</button></div><div class="wr-cr-list">${statusRowsHtml(status, false)}</div>`;
+    wireMin(p);
+    p.querySelector('[data-crawl="cancel"]').addEventListener("click", cancelCrawl);
+    p.querySelector('[data-crawl="resumecap"]').addEventListener("click", resumeFetchCrawl);
+    p.querySelector('[data-crawl="opencap"]').addEventListener("click", () => {
+      const st = getCrawlState(); const url = (st && st.captchaUrl) || location.href;
+      setStatus("Solve the verification — the download resumes automatically.");
+      try { closeReaderOverlay(); } catch (_) {}
+      location.assign(url); // show the site's Turnstile; init re-shows the panel + poll after load
+    });
+  }
+  function resumeFetchCrawl() {
+    const st = getCrawlState(); if (!st || !st.queue) return;
+    st.captchaPaused = false; saveCrawl(st);
+    W._captchaPoll = false;
+    crawlFetch(st.queue, st.opts, st.novel); // captcha'd chapter is first → retried, then continues
+  }
+  // After "Open captcha" reloads the page, poll the API until the captcha clears, then auto-resume.
+  function startCaptchaPoll(st) {
+    W._captchaPoll = true;
+    const started = Date.now();
+    const tick = async () => {
+      if (!W._captchaPoll) return;
+      if (cancelRequested()) { W._captchaPoll = false; return; }
+      const cur = getCrawlState();
+      if (!cur || !cur.captchaPaused) { W._captchaPoll = false; return; }
+      if (Date.now() - started > 10 * 60 * 1000) { W._captchaPoll = false; setStatus("Captcha wait timed out — tap Resume now when ready."); return; }
+      let c = null;
+      try { W.adapterUrl = null; W.adapterContent = undefined; c = await getAdapterContent(cur.captchaUrl); } catch (_) {}
+      if (c && !c.captcha) { W._captchaPoll = false; resumeFetchCrawl(); return; } // cleared → resume
+      setTimeout(tick, 5000);
+    };
+    setTimeout(tick, 3000);
   }
 
   // Retry a single failed chapter. nav → navigate+scrape (reload); fetch → re-fetch in place.
@@ -2056,8 +2104,11 @@
     watchEnableFlag();
     if (CFG.autoTranslate) setTimeout(() => translatePage(), 600);
     // A multi-chapter download in progress takes priority over a one-off reader reopen.
-    if (getCrawlState()) resumeCrawl();
-    else maybeReopenReader(); // resume reader mode after a Prev/Next page navigation
+    const cs = getCrawlState();
+    if (cs && cs.captchaPaused) { renderCaptchaPanel(cs.novel, cs.opts); startCaptchaPoll(cs); } // solved → auto-resume
+    else if (cs && cs.engine === "fetch") crawlFetch(cs.queue, cs.opts, cs.novel); // resume a fetch crawl after a reload
+    else if (cs) resumeCrawl();          // nav engine (newtoki/follow)
+    else maybeReopenReader();            // resume reader mode after a Prev/Next page navigation
   }
 
   // React to the extension tab enabling/disabling the widget without a reload.
