@@ -782,12 +782,21 @@
   }
   // Translate the TEXT of scraped items directly (not the live DOM) — deterministic for the
   // bulk crawl, where mutating + re-reading the page was racing and leaving chapters untranslated.
+  function withTimeout(p, ms) { return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]); }
   async function translateItemsText(items) {
     const idxs = [], texts = [];
     items.forEach((it, i) => { if (it.text) { idxs.push(i); texts.push(it.text); } });
     if (!texts.length) return items;
-    let out;
-    try { out = await requestTranslate(texts, CFG.targetLang || "en", "auto"); } catch (_) { return items; }
+    // CRITICAL for the bulk crawl: never let a translate call hang the crawl. requestTranslate
+    // relies on a service-worker reply that can be lost (SW cold start / port dropped during the
+    // rapid per-chapter navigations). Time-box it and retry once; on failure keep the original
+    // text so the crawl still completes and the file is still produced.
+    let out = null;
+    for (let attempt = 0; attempt < 2 && !out; attempt++) {
+      try { out = await withTimeout(requestTranslate(texts, CFG.targetLang || "en", "auto"), 30000); }
+      catch (_) { out = null; }
+    }
+    if (!out) return items;
     const copy = items.map((x) => ({ ...x }));
     idxs.forEach((bi, k) => { if (out[k]) copy[bi].text = out[k]; });
     return copy;
