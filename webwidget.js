@@ -1707,7 +1707,8 @@
     const novel = W.novelTitle || currentNovelTitle() || "Novel";
     W._crawlCancel = false; clearCancel();
     if (!opts.pageNav) return crawlFetch(queue, opts, novel);         // adapter sites: fetch loop (no reload)
-    const state = { queue, idx: 0, opts, novel, t: Date.now() };       // newtoki: navigate-scrape, persisted
+    const owner = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) || "";
+    const state = { queue, idx: 0, opts, novel, t: Date.now(), owner };  // newtoki: navigate-scrape, persisted
     try { sessionStorage.setItem("wrCrawl", JSON.stringify(state)); } catch (_) {}
     await clearCrawlData();
     showCrawlProgress(0, queue.length, queue[0].title);
@@ -1742,6 +1743,10 @@
     if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; } // cancelled during the last load
     const st = getCrawlState();
     if (!st || (Date.now() - st.t) > 6 * 3600 * 1000) { clearCrawl(); return; }
+    // If several copies of the extension are installed, only the one that started the crawl
+    // should drive it — otherwise multiple content scripts fight over navigation/storage.
+    const myId = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) || "";
+    if (st.owner && myId && st.owner !== myId) return;
     W._crawlCancel = false;
     showCrawlProgress(st.idx, st.queue.length, st.queue[st.idx] && st.queue[st.idx].title);
     // Only scrape a real chapter page (newtoki sometimes serves an ad/listing interstitial —
