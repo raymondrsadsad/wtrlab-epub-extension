@@ -220,6 +220,10 @@
 }
 #wr-root .wr-ov-toc-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; font-weight: 600; border-bottom: 1px solid var(--wr-border); }
 #wr-root .wr-ov-toc-tools { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--wr-border); }
+#wr-root .wr-ov-toc-tools .wr-btn { white-space: nowrap; }
+/* Fixed width so swapping the label (🌐 Titles ↔ Translating… ↔ 🌐 Original) doesn't reflow the row
+   and shove the Download button around. */
+#wr-root .wr-ov-toc-tools [data-toc="tr"] { min-width: 120px; }
 #wr-root .wr-ov-toc-list { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 2px 0; }
 #wr-root .wr-ov-toc-row { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid rgba(255,255,255,.04); }
 #wr-root .wr-ov-toc-row:hover { background: var(--wr-speak); }
