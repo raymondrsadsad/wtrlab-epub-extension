@@ -1678,6 +1678,9 @@
   // ================= bulk download: panel, engines, per-chapter status + pause + retry =========
   // sessionStorage: wrCrawl (control), wrCancel, wrPause. chrome.storage.local: wrCrawlChapters
   // (built content for OK chapters), wrCrawlStatus (every attempt: {seq,no,title,url,ok}).
+  const MAX_ATTEMPTS = 3;          // per-chapter reloads before a chapter is marked failed
+  const MAX_ROUNDS = 2;            // end-of-run automatic retry passes over the failed chapters
+  const CONN_FAIL_THRESHOLD = 3;   // consecutive failed chapters → assume connectivity/VPN loss → pause
   function myId() { try { return (chrome.runtime && chrome.runtime.id) || ""; } catch (_) { return ""; } }
   function clearCrawl() { try { sessionStorage.removeItem("wrCrawl"); } catch (_) {} }
   function getCrawlState() { try { return JSON.parse(sessionStorage.getItem("wrCrawl") || "null"); } catch (_) { return null; } }
@@ -1761,10 +1764,13 @@
     const needsVD = /(^|\.)(newtoki|booktoki|manatoki|mantoki)\d*\./i.test(location.hostname);
     const isChapter = () => !needsVD || !!document.getElementById("theme-novel-viewer-data") || !!document.querySelector(".theme-novel-content");
     const ready = () => { const host = document.querySelector(".theme-novel-content, #novel_content, .view-content"); if (host) { const sr = host.shadowRoot; const t = ((sr && sr.textContent) || host.textContent || "").replace(/\s+/g, " ").trim(); return t.length > 150 && !/Loading text|불러오는 중|로딩/i.test(t); } let b = []; try { b = pageReadableBlocks(); } catch (_) {} return b.length > 2; };
-    for (let tries = 0; tries < 80; tries++) {
+    for (let tries = 0; tries < 90; tries++) {
       if (isChapter() && ready()) return "ok";
       if (cancelRequested() || W._crawlCancel) return "cancel";
       if (/Access denied/i.test(document.title)) return "denied";
+      // After a short grace, a page that still isn't a chapter is an ad/listing/redirect — bail fast
+      // so the caller can reload, instead of burning the full timeout budget on it.
+      if (tries >= 14 && !isChapter()) return "notchapter";
       await sleep(500);
     }
     return "timeout";
@@ -1895,7 +1901,68 @@
     else if (st.queue && st.idx < st.queue.length) location.assign(st.queue[st.idx].url);
     else finishNavCrawl(st);
   }
-  async function finishNavCrawl(st) { clearCrawl(); await renderResultsPanel(st.novel, st.opts, "nav"); }
+  async function finishNavCrawl(st) {
+    // Auto-retry failed chapters in rounds before showing results, so the user doesn't have to tap
+    // Retry themselves. Each round re-navigates only the failed chapters with A2's reload-retry.
+    const status = await loadCrawlStatus();
+    const failed = status.filter((s) => !s.ok);
+    const round = st.autoRound || 0;
+    if (failed.length && round < MAX_ROUNDS && !cancelRequested() && !W._crawlCancel) {
+      const queue = failed.map((s) => ({ url: s.url, no: s.no, title: s.title, seq: s.seq }));
+      clearPause();
+      saveCrawl({ queue, idx: 0, opts: st.opts, novel: st.novel, owner: myId(), autoRound: round + 1, t: Date.now() });
+      setStatus(`Auto-retrying ${failed.length} failed (round ${round + 1})…`);
+      await renderProgressPanel({ idx: 0, total: queue.length, title: queue[0].title });
+      await sleep(1500);
+      if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
+      if (stripQ(location.href) === stripQ(queue[0].url)) resumeCrawl();
+      else location.assign(queue[0].url);
+      return;
+    }
+    clearCrawl(); await renderResultsPanel(st.novel, st.opts, "nav");
+  }
+
+  // Connectivity-loss pause (nav engine): the site is unreachable (VPN dropped). Show a panel and
+  // poll the origin until it responds, then auto-resume from where we paused. Mirrors the captcha pause.
+  async function renderConnPanel(st) {
+    const p = crawlPanelEl();
+    const status = await loadCrawlStatus();
+    const ok = status.filter((s) => s.ok).length;
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext">⚠ Connection lost (${ok} done)</span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="min">—</button><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button></span></div><div class="wr-cr-bar">Can't reach the site — check your VPN. It retries automatically; or tap <button class="wr-btn wr-sm wr-primary" data-crawl="resumeconn">Resume now</button> once it's back.</div><div class="wr-cr-list">${statusRowsHtml(status, false)}</div>`;
+    wireMin(p);
+    p.querySelector('[data-crawl="cancel"]').addEventListener("click", cancelCrawl);
+    p.querySelector('[data-crawl="resumeconn"]').addEventListener("click", resumeFromConn);
+  }
+  function startConnPoll(st) {
+    W._connPoll = true;
+    const started = Date.now();
+    const tick = async () => {
+      if (!W._connPoll) return;
+      if (cancelRequested()) { W._connPoll = false; return; }
+      const cur = getCrawlState();
+      if (!cur || !cur.connPaused) { W._connPoll = false; return; }
+      if (Date.now() - started > 60 * 60 * 1000) { W._connPoll = false; return; } // stop auto-probe after 1h; Resume still works
+      let up = false;
+      try {
+        await Promise.race([
+          fetch(location.origin + "/favicon.ico?_wrp=" + Date.now(), { method: "GET", cache: "no-store", mode: "no-cors" }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000)),
+        ]);
+        up = true;
+      } catch (_) { up = false; }
+      if (up) { W._connPoll = false; resumeFromConn(); return; } // reachable → resume
+      setTimeout(tick, 20000);
+    };
+    setTimeout(tick, 20000);
+  }
+  function resumeFromConn() {
+    const st = getCrawlState(); if (!st) return;
+    st.connPaused = false; st.consecFail = 0; st.attempt = 0; st.failRunStart = undefined; saveCrawl(st);
+    W._connPoll = false;
+    const target = (st.queue && st.idx < st.queue.length) ? st.queue[st.idx].url : null;
+    if (target && stripQ(location.href) !== stripQ(target)) location.assign(target);
+    else location.reload();
+  }
 
   // newtoki/pageNav + follow: resume the navigate-scrape crawl after each page load.
   async function resumeCrawl() {
@@ -1910,6 +1977,14 @@
       await renderProgressPanel({ idx: 0, total: 1, title: st.retryTitle });
       const w = await waitForChapter();
       if (w === "cancel") { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
+      // Reload-retry so manual Retry matches a by-hand reload (clears ads / grants render time).
+      if (w !== "ok" && (st.attempt || 0) < MAX_ATTEMPTS && !cancelRequested() && !W._crawlCancel) {
+        st.attempt = (st.attempt || 0) + 1; saveCrawl(st);
+        await renderProgressPanel({ idx: 0, total: 1, title: `Retrying chapter (attempt ${st.attempt})${w === "denied" ? " — check VPN" : ""}` });
+        await sleep(w === "denied" ? 5000 : (w === "notchapter" ? 1500 : 2500));
+        if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
+        location.reload(); return;
+      }
       if (w === "ok") await scrapeAndStore(st.retrySeq, st.retryNo, st.retryUrl, st.opts);
       else await upsertCrawlStatus({ seq: st.retrySeq, no: st.retryNo, title: st.retryTitle, url: st.retryUrl, ok: false });
       clearCrawl(); await renderResultsPanel(st.novel, st.opts, "nav"); return;
@@ -1923,15 +1998,40 @@
     await renderProgressPanel({ idx: st.idx, total, title: cur && cur.title });
     let w = await waitForChapter();
     if (w === "cancel") { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
-    if (w === "denied") {
-      st.deniedTries = (st.deniedTries || 0) + 1;
-      if (st.deniedTries <= 2 && !cancelRequested()) { saveCrawl(st); await renderProgressPanel({ idx: st.idx, total, title: "Blocked — retrying (check VPN)" }); await sleep(5000); if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; } location.reload(); return; }
-      w = "timeout"; // give up on this chapter
+
+    // Per-chapter reload-retry: an ad interstitial ("notchapter"), a slow render ("timeout"), or a
+    // transient block ("denied") is almost always fixed by reloading — exactly what the user did by
+    // hand. Reload the SAME chapter up to MAX_ATTEMPTS before giving up and marking it failed.
+    if (w !== "ok") {
+      if ((st.attempt || 0) < MAX_ATTEMPTS && !cancelRequested() && !W._crawlCancel) {
+        st.attempt = (st.attempt || 0) + 1; saveCrawl(st);
+        await renderProgressPanel({ idx: st.idx, total, title: `Retrying chapter (attempt ${st.attempt})${w === "denied" ? " — check VPN" : ""}` });
+        await sleep(w === "denied" ? 5000 : (w === "notchapter" ? 1500 : 2500));
+        if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
+        location.reload(); return;
+      }
     }
-    st.deniedTries = 0;
-    if (w === "ok") await scrapeAndStore(seq, cur && cur.no, location.href, st.opts);
+    st.attempt = 0;
+
+    let okNow = false;
+    if (w === "ok") okNow = await scrapeAndStore(seq, cur && cur.no, location.href, st.opts);
     else await upsertCrawlStatus({ seq, no: cur && cur.no, title: (cur && cur.title) || currentChapterTitle() || ("Chapter " + (seq + 1)), url: location.href, ok: false });
     if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+
+    // A run of consecutive failures means the site is unreachable (VPN/connection dropped), not a
+    // per-chapter glitch — so PAUSE and poll instead of burning the rest of the queue as failures.
+    // Rewind to the first chapter of the run so none of those are lost once it's back.
+    if (okNow) { st.consecFail = 0; st.failRunStart = undefined; }
+    else {
+      if (st.consecFail == null) st.consecFail = 0;
+      if (st.consecFail === 0) st.failRunStart = st.idx;
+      st.consecFail++;
+      if (st.consecFail >= CONN_FAIL_THRESHOLD && !st.follow && st.queue) {
+        st.idx = (st.failRunStart != null ? st.failRunStart : st.idx);
+        st.connPaused = true; st.attempt = 0; saveCrawl(st);
+        await renderConnPanel(st); startConnPoll(st); return;
+      }
+    }
 
     // Decide the next chapter.
     const nextIdx = st.idx + 1;
@@ -1939,12 +2039,13 @@
     if (st.follow) { const nu = (detectSiteChapterNav() || {}).nextUrl; if (nu && stripQ(nu) !== stripQ(location.href) && nextIdx < (st.max || 5000)) nextUrl = nu; }
     else if (st.queue && nextIdx < st.queue.length) nextUrl = st.queue[nextIdx].url;
 
-    if (!nextUrl) { await finishNavCrawl(st); return; } // finished → results
+    if (!nextUrl) { await finishNavCrawl(st); return; } // finished → results (auto-retry rounds first)
 
     if (pauseRequested()) { clearPause(); st.idx = nextIdx; st.paused = true; saveCrawl(st); await renderProgressPanel({ idx: st.idx, total, paused: true }); return; }
     st.idx = nextIdx; saveCrawl(st);
     await renderProgressPanel({ idx: st.idx, total, title: st.queue ? (st.queue[st.idx] && st.queue[st.idx].title) : "" });
-    await sleep(500);
+    // Adaptive pacing: base delay plus extra after failures so rate-limiting can cool off.
+    await sleep(Math.min(600 + (st.consecFail || 0) * 1500, 6000));
     if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
     location.assign(nextUrl);
   }
@@ -2113,6 +2214,7 @@
     // A multi-chapter download in progress takes priority over a one-off reader reopen.
     const cs = getCrawlState();
     if (cs && cs.captchaPaused) { renderCaptchaPanel(cs.novel, cs.opts); startCaptchaPoll(cs); } // solved → auto-resume
+    else if (cs && cs.connPaused) { renderConnPanel(cs); startConnPoll(cs); } // VPN/connection back → auto-resume
     else if (cs && cs.engine === "fetch") crawlFetch(cs.queue, cs.opts, cs.novel); // resume a fetch crawl after a reload
     else if (cs) resumeCrawl();          // nav engine (newtoki/follow)
     else maybeReopenReader();            // resume reader mode after a Prev/Next page navigation
