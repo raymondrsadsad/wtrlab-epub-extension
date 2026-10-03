@@ -1318,11 +1318,12 @@
   // Also loads the chapter list (getMeta) to find the current chapter's position, so
   // the reader can offer Prev/Next. `targetUrl` lets Prev/Next fetch a sibling chapter
   // without navigating the page. Adds content.nav = { prevUrl, nextUrl }.
-  async function getAdapterContent(targetUrl) {
+  async function getAdapterContent(targetUrl, aopts) {
     if (!extAlive()) return null; // stale tab after an extension update — fall back / show reload hint
+    const noCache = !!(aopts && aopts.noCache); // parallel pool: don't touch the single shared cache slot
     const url = targetUrl || location.href;
-    if (W.adapterUrl === url && W.adapterContent !== undefined) return W.adapterContent;
-    W.adapterUrl = url;
+    if (!noCache && W.adapterUrl === url && W.adapterContent !== undefined) return W.adapterContent;
+    if (!noCache) W.adapterUrl = url;
     let content = null;
     try {
       globalThis.__WR_TX_VIA_SW = true; // adapters translate via the service worker
@@ -1366,10 +1367,10 @@
       console.warn("[WebReader] adapter path failed — using generic extractor", e);
       // Surface a Turnstile/Cloudflare challenge distinctly so the bulk crawl can pause and let
       // the user clear it (rather than silently marking every chapter as a plain failure).
-      if (e && (e.name === "CaptchaError" || /turnstile|captcha|verification/i.test(e.message || ""))) { W.adapterContent = undefined; return { captcha: true }; }
+      if (e && (e.name === "CaptchaError" || /turnstile|captcha|verification/i.test(e.message || ""))) { if (!noCache) W.adapterContent = undefined; return { captcha: true }; }
       content = null;
     }
-    W.adapterContent = content;
+    if (!noCache) W.adapterContent = content;
     return content;
   }
   // Load a sibling chapter (from Prev/Next) into the open reader overlay.
@@ -1637,7 +1638,8 @@
         <div class="wr-dl-row wr-dl-range wr-hidden">From <input type="number" min="1" data-dl="from" value="${curNo}"> to <input type="number" min="1" data-dl="to" value="${lastNo}"></div>
         <label class="wr-dl-row">Output <select data-dl="output"><option value="individual">One file per chapter</option><option value="combined">One combined EPUB</option></select></label>
         <label class="wr-dl-row">Language <select data-dl="lang"><option value="en">English</option><option value="match">Match reader</option><option value="orig">Original</option></select></label>
-        ${pageNav ? `<label class="wr-dl-row">Mode <select data-dl="mode"><option value="tab">This tab</option><option value="bg">Background tab</option></select></label>` : ""}
+        <label class="wr-dl-row">Mode <select data-dl="mode"><option value="tab">${pageNav ? "This tab" : "Normal"}</option>${pageNav ? `<option value="bg">Background tab</option>` : `<option value="multi">Multi-fetch (parallel)</option>`}</select></label>
+        <label class="wr-dl-row wr-dl-conc wr-hidden">At once <select data-dl="conc"><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
         <div class="wr-dl-row"><button class="wr-btn wr-primary" data-dl="start">Start download</button></div>
         <div class="wr-dl-note"></div>
       </div>`;
@@ -1650,7 +1652,14 @@
     scopeSel.addEventListener("change", syncRange); syncRange();
     const note = d.querySelector(".wr-dl-note");
     const modeSel = d.querySelector('[data-dl="mode"]');
-    if (modeSel) modeSel.addEventListener("change", () => { note.textContent = modeSel.value === "bg" ? "Background mode isn't available yet — this run will use the current tab." : ""; });
+    const concRow = d.querySelector(".wr-dl-conc");
+    const syncMode = () => {
+      const m = modeSel ? modeSel.value : "tab";
+      if (concRow) concRow.classList.toggle("wr-hidden", m !== "multi");
+      note.textContent = m === "bg" ? "Runs in a hidden tab so you can keep browsing; falls back to this tab if the browser suspends it."
+        : (m === "multi" ? "Downloads several chapters at once — faster." : "");
+    };
+    if (modeSel) { modeSel.addEventListener("change", syncMode); syncMode(); }
     d.querySelector('[data-dl="start"]').addEventListener("click", () => {
       const scope = scopeSel.value;
       let idxs = [];
@@ -1663,11 +1672,14 @@
         idxs = chapters.map((c, i) => i).filter((i) => { const n = chapters[i].no != null ? chapters[i].no : i + 1; return n >= lo && n <= hi; });
       }
       idxs = [...new Set(idxs)].sort((a, b) => a - b);
+      const mode = modeSel ? modeSel.value : "tab";
       const opts = {
         scope,
         output: d.querySelector('[data-dl="output"]').value,
         lang: d.querySelector('[data-dl="lang"]').value,
         pageNav: scope === "follow" ? true : pageNav, // follow always drives the page
+        mode,
+        concurrency: mode === "multi" ? (+d.querySelector('[data-dl="conc"]').value || 2) : 1,
       };
       if (scope !== "follow" && !idxs.length) { note.textContent = "No chapters selected."; return; }
       d.remove(); closeTocDrawer();
@@ -1692,12 +1704,17 @@
   function setPause() { try { sessionStorage.setItem("wrPause", "1"); } catch (_) {} }
   function clearPause() { try { sessionStorage.removeItem("wrPause"); } catch (_) {} }
   const sgGet = (k) => new Promise((res) => { try { chrome.storage.local.get(k, (o) => res((o && o[k]) || [])); } catch (_) { res([]); } });
+  const sgGet1 = (k) => new Promise((res) => { try { chrome.storage.local.get(k, (o) => res(o ? o[k] : undefined)); } catch (_) { res(undefined); } }); // scalar (no [] default)
   const sgSet = (k, v) => new Promise((res) => { try { chrome.storage.local.set({ [k]: v }, res); } catch (_) { res(); } });
   function clearCrawlData() { return sgSet("wrCrawlChapters", []).then(() => sgSet("wrCrawlStatus", [])); }
   function loadCrawlData() { return sgGet("wrCrawlChapters"); }
   function loadCrawlStatus() { return sgGet("wrCrawlStatus"); }
-  async function upsertCrawlData(e) { const a = await sgGet("wrCrawlChapters"); const i = a.findIndex((x) => x.seq === e.seq); if (i >= 0) a[i] = e; else a.push(e); await sgSet("wrCrawlChapters", a); }
-  async function upsertCrawlStatus(e) { const a = await sgGet("wrCrawlStatus"); const i = a.findIndex((x) => x.seq === e.seq); if (i >= 0) a[i] = e; else a.push(e); await sgSet("wrCrawlStatus", a); }
+  // Serialize all crawl writes through one promise chain so parallel scrapers (Multi-fetch pool)
+  // can't clobber each other's read-modify-write on the shared arrays.
+  let _crawlWriteLock = Promise.resolve();
+  function withCrawlWrite(fn) { const run = _crawlWriteLock.then(fn, fn); _crawlWriteLock = run.then(() => {}, () => {}); return run; }
+  function upsertCrawlData(e) { return withCrawlWrite(async () => { const a = await sgGet("wrCrawlChapters"); const i = a.findIndex((x) => x.seq === e.seq); if (i >= 0) a[i] = e; else a.push(e); await sgSet("wrCrawlChapters", a); }); }
+  function upsertCrawlStatus(e) { return withCrawlWrite(async () => { const a = await sgGet("wrCrawlStatus"); const i = a.findIndex((x) => x.seq === e.seq); if (i >= 0) a[i] = e; else a.push(e); await sgSet("wrCrawlStatus", a); }); }
   function wantTranslateFor(lang) { return lang === "en" || (lang === "match" && ((W.translated && !W.showingOriginal) || CFG.autoTranslate)); }
 
   // ---- unified crawl panel ----
@@ -1802,34 +1819,135 @@
     const queue = idxs.map((i, k) => ({ url: chapters[i].url, no: chapters[i].no, title: chapters[i].title, seq: k }));
     if (!queue.length) return;
     await clearCrawlData();
-    if (!opts.pageNav) return crawlFetch(queue, opts, novel); // adapter sites: fetch loop (no reload)
+    if (!opts.pageNav) return crawlFetch(queue, opts, novel); // adapter sites: fetch loop (pool if Multi-fetch)
+    if (opts.mode === "bg") return startBgCrawl(queue, opts, novel); // run the nav crawl in a hidden tab
     saveCrawl({ queue, idx: 0, opts, novel, owner, t: Date.now() });
     if (stripQ(location.href) === stripQ(queue[0].url)) resumeCrawl();
     else location.assign(queue[0].url);
   }
 
+  // ---- Background-tab mode (nav-engine sites: newtoki + generic) ----
+  // The hidden tab self-runs the full nav crawl (so English/Original + output behave identically);
+  // this controller tab stays put, mirrors progress from shared storage, and does the final Save.
+  // If the hidden tab makes no progress (mobile browsers freeze background tabs), we auto-fall back
+  // to crawling in this tab so a download never silently hangs.
+  async function startBgCrawl(queue, opts, novel) {
+    await sgSet("wrBgLaunch", { queue, opts, novel, owner: myId(), t: Date.now() });
+    await sgSet("wrBgDone", false); await sgSet("wrBgConn", false); await sgSet("wrBgBeat", Date.now());
+    const firstUrl = queue[0].url + (queue[0].url.indexOf("#") >= 0 ? "" : "#wrbg");
+    let opened = false;
+    try {
+      chrome.runtime.sendMessage({ type: "WR_OPEN_BG", url: firstUrl }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok) { if (!opened) bgFallback(queue, opts, novel, "couldn't open a background tab"); return; }
+        opened = true; W._bgTabId = resp.tabId; startBgMirror(queue, opts, novel);
+      });
+    } catch (_) { bgFallback(queue, opts, novel, "couldn't open a background tab"); }
+  }
+  function bgCloseTab() { try { if (W._bgTabId != null) chrome.runtime.sendMessage({ type: "WR_BG_CLOSE", tabId: W._bgTabId }, () => {}); } catch (_) {} W._bgTabId = null; }
+  async function bgFallback(queue, opts, novel, why) {
+    W._bgPoll = false; bgCloseTab();
+    const status = await loadCrawlStatus();
+    const okSeqs = new Set(status.filter((s) => s.ok).map((s) => s.seq));
+    const remaining = queue.filter((ch) => !okSeqs.has(ch.seq));
+    setStatus((why ? why + " — " : "") + "continuing in this tab…");
+    if (!remaining.length) { clearCrawl(); await renderResultsPanel(novel, { ...opts, mode: "tab" }, "nav"); return; }
+    const fopts = { ...opts, mode: "tab" };
+    saveCrawl({ queue: remaining, idx: 0, opts: fopts, novel, owner: myId(), t: Date.now() });
+    if (stripQ(location.href) === stripQ(remaining[0].url)) resumeCrawl();
+    else location.assign(remaining[0].url);
+  }
+  function startBgMirror(queue, opts, novel) {
+    W._bgPoll = true;
+    const mirrorStart = Date.now();
+    const tick = async () => {
+      if (!W._bgPoll) return;
+      if (W._crawlCancel || cancelRequested()) { W._bgPoll = false; bgCloseTab(); clearCancel(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+      let done = false, conn = false, beat = 0, status = [];
+      try { done = await sgGet1("wrBgDone"); conn = await sgGet1("wrBgConn"); beat = await sgGet1("wrBgBeat") || 0; status = await loadCrawlStatus(); } catch (_) {}
+      const ok = status.filter((s) => s.ok).length, fail = status.length - ok;
+      if (done) { W._bgPoll = false; bgCloseTab(); clearCrawl(); try { await sgSet("wrBgDone", false); } catch (_) {} await renderResultsPanel(novel, { ...opts, mode: "tab" }, "nav"); return; }
+      if (conn) { await renderBgPanel({ ok, fail, conn: true }); setTimeout(tick, 2000); return; }
+      // No heartbeat from the worker for a while → the hidden tab is likely frozen (mobile freezes
+      // background tabs). Fall back to crawling in this tab so the download never silently hangs.
+      if (Date.now() - Math.max(beat, mirrorStart) > 90000) { bgFallback(queue, opts, novel, "background tab stalled"); return; }
+      await renderBgPanel({ ok, fail, total: queue.length, conn: false });
+      setTimeout(tick, 2000);
+    };
+    renderBgPanel({ ok: 0, fail: 0, total: queue.length, conn: false });
+    setTimeout(tick, 2000);
+  }
+  async function renderBgPanel(info) {
+    const p = crawlPanelEl();
+    const head = info.conn ? `⚠ Connection lost — check VPN (${info.ok} done)` : `Downloading in background — ${info.ok} done${info.fail ? `, ${info.fail} failed` : ""}`;
+    const status = await loadCrawlStatus();
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext"></span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="min">—</button><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button></span></div><div class="wr-cr-bar">${info.conn ? "Reconnect your VPN — it resumes automatically." : "Running in a hidden tab; you can keep browsing here."}</div><div class="wr-cr-list">${statusRowsHtml(status, false)}</div>`;
+    p.querySelector(".wr-cr-htext").textContent = head;
+    wireMin(p);
+    p.querySelector('[data-crawl="cancel"]').addEventListener("click", () => { W._bgPoll = false; bgCloseTab(); cancelCrawl(); });
+  }
+  // Runs inside the hidden worker tab (opened at queue[0] with #wrbg): seed this tab's own crawl
+  // state from the shared launch record and start the normal nav engine (reused verbatim).
+  async function bootstrapBgWorker() {
+    let launch = null;
+    try { launch = await sgGet1("wrBgLaunch"); } catch (_) {}
+    try { history.replaceState(null, "", location.pathname + location.search); } catch (_) {} // drop the #wrbg marker
+    if (!launch || !launch.queue || !launch.queue.length) return; // nothing to resume
+    try { await sgSet("wrBgConn", false); } catch (_) {}
+    saveCrawl({ queue: launch.queue, idx: 0, opts: launch.opts, novel: launch.novel, owner: launch.owner || myId(), bg: true, t: Date.now() });
+    resumeCrawl();
+  }
+
   // Adapter sites: fetch each chapter in place (fast, no navigation), store status, then results.
   // queue items may carry `seq` (mass-retry of specific chapters); else the loop index is the seq.
+  // Multi-fetch (opts.mode==="multi") runs opts.concurrency workers at once; the per-chapter logic is
+  // identical to the sequential path, so English/Original and combined/individual behave the same.
   async function crawlFetch(queue, opts, novel) {
-    for (let i = 0; i < queue.length; i++) {
-      if (W._crawlCancel || cancelRequested()) { clearCancel(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
-      const ch = queue[i]; const seq = ch.seq != null ? ch.seq : i;
-      await renderProgressPanel({ idx: i, total: queue.length, title: ch.title });
+    const conc = (opts && opts.mode === "multi") ? Math.max(1, Math.min(4, +opts.concurrency || 2)) : 1;
+    const total = queue.length;
+    let next = 0, done = 0, stopped = false, captchaHit = false;
+
+    async function fetchOne(ch, seq) {
       let content = null;
-      try { W.adapterUrl = null; W.adapterContent = undefined; content = await getAdapterContent(ch.url); } catch (_) {}
-      // Captcha → pause the WHOLE crawl right here (don't burn the rest as failures). The captcha'd
-      // chapter stays at the front of the remaining queue so it's retried (not skipped) on resume.
-      if (content && content.captcha) {
-        saveCrawl({ engine: "fetch", queue: queue.slice(i), opts, novel, owner: myId(), captchaPaused: true, captchaUrl: ch.url, t: Date.now() });
-        await renderCaptchaPanel(novel, opts);
-        return;
-      }
+      try { content = await getAdapterContent(ch.url, { noCache: true }); } catch (_) {} // noCache: pool-safe
+      if (content && content.captcha) { captchaHit = true; stopped = true; return; }
       const title = (content && content.title) || ch.title || ("Chapter " + (ch.no != null ? ch.no : seq + 1));
       if (content && content.items && content.items.length) {
         const { xhtmlBody, images } = await buildChapterParts(content.items, `c${seq}_`);
-        if (xhtmlBody) { await upsertCrawlData({ seq, no: ch.no, title, xhtmlBody, images, srcUrl: ch.url }); await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: true }); continue; }
+        if (xhtmlBody) { await upsertCrawlData({ seq, no: ch.no, title, xhtmlBody, images, srcUrl: ch.url }); await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: true }); return; }
       }
       await upsertCrawlStatus({ seq, no: ch.no, title, url: ch.url, ok: false });
+    }
+    async function worker() {
+      while (!stopped) {
+        if (W._crawlCancel || cancelRequested() || pauseRequested()) return;
+        const i = next++; if (i >= queue.length) return;
+        const ch = queue[i]; const seq = ch.seq != null ? ch.seq : i;
+        await fetchOne(ch, seq);
+        done++;
+        await renderProgressPanel({ idx: Math.min(done, total) - 1, total, title: ch.title });
+      }
+    }
+    await Promise.all(Array.from({ length: Math.max(1, Math.min(conc, total || 1)) }, worker));
+
+    if (W._crawlCancel || cancelRequested()) { clearCancel(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+
+    // What's still undone (captcha or a user pause may have halted dispatch before the end).
+    const status = await loadCrawlStatus();
+    const okSeqs = new Set(status.filter((s) => s.ok).map((s) => s.seq));
+    const remaining = queue.filter((ch, i) => !okSeqs.has(ch.seq != null ? ch.seq : i));
+
+    // Captcha → pause the whole crawl, keep the undone chapters so none are skipped.
+    if (captchaHit && remaining.length) {
+      saveCrawl({ engine: "fetch", queue: remaining, opts, novel, owner: myId(), captchaPaused: true, captchaUrl: remaining[0].url, t: Date.now() });
+      await renderCaptchaPanel(novel, opts);
+      return;
+    }
+    // User pause → save the undone chapters so Resume picks up where it left off.
+    if (pauseRequested() && remaining.length) {
+      clearPause();
+      saveCrawl({ engine: "fetch", queue: remaining, opts, novel, owner: myId(), paused: true, t: Date.now() });
+      await renderProgressPanel({ idx: 0, total, paused: true });
+      return;
     }
     clearCrawl(); // a fully-finished fetch crawl needs no resumable state
     await renderResultsPanel(novel, opts, "fetch");
@@ -1897,6 +2015,7 @@
   function resumeFromPause() {
     const st = getCrawlState(); if (!st) return;
     st.paused = false; clearPause(); saveCrawl(st);
+    if (st.engine === "fetch") { crawlFetch(st.queue, st.opts, st.novel); return; } // adapter pool resumes in place
     if (st.follow) { const nu = (detectSiteChapterNav() || {}).nextUrl; if (nu && stripQ(nu) !== stripQ(location.href)) location.assign(nu); else finishNavCrawl(st); }
     else if (st.queue && st.idx < st.queue.length) location.assign(st.queue[st.idx].url);
     else finishNavCrawl(st);
@@ -1910,7 +2029,7 @@
     if (failed.length && round < MAX_ROUNDS && !cancelRequested() && !W._crawlCancel) {
       const queue = failed.map((s) => ({ url: s.url, no: s.no, title: s.title, seq: s.seq }));
       clearPause();
-      saveCrawl({ queue, idx: 0, opts: st.opts, novel: st.novel, owner: myId(), autoRound: round + 1, t: Date.now() });
+      saveCrawl({ queue, idx: 0, opts: st.opts, novel: st.novel, owner: myId(), autoRound: round + 1, bg: st.bg, t: Date.now() });
       setStatus(`Auto-retrying ${failed.length} failed (round ${round + 1})…`);
       await renderProgressPanel({ idx: 0, total: queue.length, title: queue[0].title });
       await sleep(1500);
@@ -1919,6 +2038,7 @@
       else location.assign(queue[0].url);
       return;
     }
+    if (st.bg) { try { await sgSet("wrBgDone", true); } catch (_) {} clearCrawl(); return; } // controller tab shows results + Save
     clearCrawl(); await renderResultsPanel(st.novel, st.opts, "nav");
   }
 
@@ -1958,6 +2078,7 @@
   function resumeFromConn() {
     const st = getCrawlState(); if (!st) return;
     st.connPaused = false; st.consecFail = 0; st.attempt = 0; st.failRunStart = undefined; saveCrawl(st);
+    if (st.bg) { try { chrome.storage.local.set({ wrBgConn: false }); } catch (_) {} }
     W._connPoll = false;
     const target = (st.queue && st.idx < st.queue.length) ? st.queue[st.idx].url : null;
     if (target && stripQ(location.href) !== stripQ(target)) location.assign(target);
@@ -1971,6 +2092,7 @@
     if (!st || (Date.now() - st.t) > 6 * 3600 * 1000) { clearCrawl(); return; }
     if (st.owner && myId() && st.owner !== myId()) return; // another installed copy owns this crawl
     W._crawlCancel = false;
+    if (st.bg) { try { chrome.storage.local.set({ wrBgBeat: Date.now() }); } catch (_) {} } // heartbeat for the controller's stall detection
 
     // Retry of a single chapter (user tapped Retry on the results list).
     if (st.retry) {
@@ -2029,6 +2151,7 @@
       if (st.consecFail >= CONN_FAIL_THRESHOLD && !st.follow && st.queue) {
         st.idx = (st.failRunStart != null ? st.failRunStart : st.idx);
         st.connPaused = true; st.attempt = 0; saveCrawl(st);
+        if (st.bg) { try { await sgSet("wrBgConn", true); } catch (_) {} } // tell the controller to show "connection lost"
         await renderConnPanel(st); startConnPoll(st); return;
       }
     }
@@ -2210,11 +2333,17 @@
     if (W.synth) { loadVoices(); W.synth.onvoiceschanged = loadVoices; }
     watchSpaNav();
     watchEnableFlag();
-    if (CFG.autoTranslate) setTimeout(() => translatePage(), 600);
+    // A background-tab worker (opened with the #wrbg marker) self-runs the nav crawl in this hidden tab.
+    const bgWorker = /(?:^|[#&])wrbg\b/.test(location.hash);
+    // Don't auto-translate the live page during a crawl: scrapeAndStore collects the ORIGINAL text and
+    // translates it itself per the chosen Language, so "Original" stays original (and it's faster).
+    if (CFG.autoTranslate && !getCrawlState() && !bgWorker) setTimeout(() => translatePage(), 600);
     // A multi-chapter download in progress takes priority over a one-off reader reopen.
+    if (bgWorker && !getCrawlState()) { bootstrapBgWorker(); return; }
     const cs = getCrawlState();
     if (cs && cs.captchaPaused) { renderCaptchaPanel(cs.novel, cs.opts); startCaptchaPoll(cs); } // solved → auto-resume
     else if (cs && cs.connPaused) { renderConnPanel(cs); startConnPoll(cs); } // VPN/connection back → auto-resume
+    else if (cs && cs.engine === "fetch" && cs.paused) renderProgressPanel({ idx: 0, total: cs.queue ? cs.queue.length : 0, paused: true }); // paused fetch crawl (manual reload)
     else if (cs && cs.engine === "fetch") crawlFetch(cs.queue, cs.opts, cs.novel); // resume a fetch crawl after a reload
     else if (cs) resumeCrawl();          // nav engine (newtoki/follow)
     else maybeReopenReader();            // resume reader mode after a Prev/Next page navigation

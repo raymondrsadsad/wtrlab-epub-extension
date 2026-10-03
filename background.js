@@ -62,6 +62,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return; // synchronous
   }
 
+  // Background-tab download: open the first chapter in a hidden (inactive) tab. The content script
+  // there self-runs the crawl; the originating tab mirrors progress and closes this tab when done.
+  if (msg.type === "WR_OPEN_BG") {
+    try {
+      chrome.tabs.create({ url: msg.url, active: false }, (tab) => {
+        if (chrome.runtime.lastError || !tab) sendResponse({ ok: false, error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || "no tab" });
+        else sendResponse({ ok: true, tabId: tab.id });
+      });
+    } catch (e) { sendResponse({ ok: false, error: (e && e.message) || String(e) }); }
+    return true; // async reply
+  }
+  // Close the hidden background-download tab (on finish, cancel, or stall-fallback).
+  if (msg.type === "WR_BG_CLOSE") {
+    try { if (msg.tabId != null) chrome.tabs.remove(msg.tabId, () => void chrome.runtime.lastError); } catch (_) {}
+    sendResponse({ ok: true });
+    return; // synchronous
+  }
+
   if (msg.type === "OPEN_IN_READER") {
     const url = msg.url || (sender.tab && sender.tab.url) || "";
     const q = url ? "?read=" + encodeURIComponent(url) : "";
