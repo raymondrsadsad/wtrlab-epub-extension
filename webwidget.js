@@ -1713,7 +1713,7 @@
   async function startCrawl(chapters, idxs, opts) {
     const queue = idxs.map((i) => ({ url: chapters[i].url, no: chapters[i].no, title: chapters[i].title }));
     if (!queue.length) return;
-    const novel = W.novelTitle || currentNovelTitle() || "Novel";
+    const novel = currentNovelTitle() || W.novelTitle || "Novel"; // prefer the chapter page's (English) title
     W._crawlCancel = false; clearCancel();
     if (!opts.pageNav) return crawlFetch(queue, opts, novel);         // adapter sites: fetch loop (no reload)
     const owner = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) || "";
@@ -1762,11 +1762,18 @@
     // never save that as a "chapter"). On newtoki a chapter always ships theme-novel-viewer-data.
     const needsVD = /(^|\.)(newtoki|booktoki|manatoki|mantoki)\d*\./i.test(location.hostname);
     const isChapter = () => !needsVD || !!document.getElementById("theme-novel-viewer-data") || !!document.querySelector(".theme-novel-content");
-    // wait for the chapter prose to render
-    let blocks = [], tries = 0;
-    while (tries < 60) {
-      try { blocks = pageReadableBlocks(); } catch (_) {}
-      if (blocks.length > 2 && isChapter()) break;
+    // Wait for the CHAPTER PROSE to actually render — not just "any blocks", which the page's
+    // menus/ads satisfy before the (async, shadow-DOM) chapter text loads. Scraping too early is
+    // why ch2+ came out empty and only the first (already-rendered) chapter had real text.
+    const contentReady = () => {
+      const host = document.querySelector(".theme-novel-content, #novel_content, .view-content");
+      if (host) { const sr = host.shadowRoot; const t = ((sr && sr.textContent) || host.textContent || "").replace(/\s+/g, " ").trim(); return t.length > 150 && !/Loading text|불러오는 중|로딩/i.test(t); }
+      let b = []; try { b = pageReadableBlocks(); } catch (_) {}
+      return b.length > 2;
+    };
+    let ready = false, tries = 0;
+    while (tries < 80) { // up to ~40s for the viewer to decrypt+render
+      if (isChapter() && contentReady()) { ready = true; break; }
       if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
       if (/Access denied/i.test(document.title)) {
         if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
@@ -1780,7 +1787,7 @@
     const novel = st.novel || currentNovelTitle();
     // Scrape + accumulate this chapter (download happens once at the very end, so the per-chapter
     // navigation can't cancel it and the save is one gesture → one browser download prompt).
-    if (blocks.length > 2 && isChapter()) {
+    if (ready) {
       let items = collectItems(pickContent());
       if (wantTranslateFor(st.opts.lang)) { try { items = await translateItemsText(items); } catch (_) {} } // translate the scraped text directly
       const chapTitle = currentChapterTitle() || ch.title || ("Chapter " + (ch.no != null ? ch.no : st.idx + 1));
