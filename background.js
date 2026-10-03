@@ -53,6 +53,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async reply
   }
 
+  // Open the extension's Novel→EPUB tab from the on-site widget, with the page pre-filled.
+  if (msg.type === "OPEN_POPUP") {
+    const url = msg.url || (sender.tab && sender.tab.url) || "";
+    const q = url ? "?src=" + encodeURIComponent(url) : "";
+    chrome.tabs.create({ url: chrome.runtime.getURL("popup.html" + q) });
+    sendResponse({ ok: true });
+    return; // synchronous
+  }
+
   if (msg.type === "OPEN_IN_READER") {
     const url = msg.url || (sender.tab && sender.tab.url) || "";
     const q = url ? "?read=" + encodeURIComponent(url) : "";

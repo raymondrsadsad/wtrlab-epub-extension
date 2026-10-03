@@ -380,10 +380,13 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
 .reader-drawer {
   position: fixed; top: 0; left: 0; height: 100%; width: min(84%, 320px);
   background: var(--card); border-right: 1px solid var(--border-strong); box-shadow: var(--shadow);
-  transform: translateX(-100%); transition: transform .25s ease; z-index: 80;
+  transform: translateX(-100%); transition: transform .25s ease, visibility .25s ease; z-index: 80;
   display: flex; flex-direction: column; min-height: 0;
+  /* Fully hide when closed — otherwise the drawer's right edge sits at x=0 and its ✕ close
+     button peeks onto the screen at the top-left (looks like a stray "<"). */
+  visibility: hidden;
 }
-.reader-drawer.open { transform: translateX(0); }
+.reader-drawer.open { transform: translateX(0); visibility: visible; }
 .reader-drawer .drawer-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .reader-drawer .drawer-head .ttl { font-weight: 700; flex: 1; }
 .reader-drawer .list { flex: 1; max-height: none; padding: 4px; }

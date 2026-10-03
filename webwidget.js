@@ -59,7 +59,7 @@
     ["zh-CN", "Chinese"], ["id", "Indonesian"], ["vi", "Vietnamese"], ["ar", "Arabic"],
     ["hi", "Hindi"], ["tl", "Filipino"],
   ];
-  const CFG = { enabled: false, autoTranslate: false, targetLang: "en", rate: 1, sentPause: 250, voiceName: "", follow: true, highlight: true, readSymbols: true, autoNext: true, bgPlay: true, mediaNotif: true, pos: null, ttsCollapsed: false,
+  const CFG = { enabled: true, autoTranslate: true, targetLang: "en", rate: 1, sentPause: 250, voiceName: "", follow: true, highlight: true, readSymbols: true, autoNext: true, bgPlay: true, mediaNotif: true, pos: null, ttsCollapsed: false,
     // Page zoom: unlockZoom re-enables native pinch-zoom on sites that block it; zoomByHost is
     // a remembered CSS-zoom factor per hostname (set from the widget's Zoom control).
     unlockZoom: true, zoomByHost: {},
@@ -347,6 +347,7 @@
         <button class="wr-btn" data-act="read">🔊 Read aloud</button>
         <button class="wr-btn" data-act="reader">📖 Reader mode</button>
         <button class="wr-btn" data-act="openreader">📖 Open in Reader</button>
+        <button class="wr-btn" data-act="openext">📘 Novel to EPUB</button>
       </div>
       <div class="wr-settings">
         <label class="wr-field">Translate to
@@ -561,6 +562,12 @@
     if (act === "read") return startReadAloud("page");
     if (act === "reader") return openReaderOverlay();
     if (act === "openreader") return openInExtensionReader();
+    if (act === "openext") return openExtensionPopup();
+  }
+  // Open the full Novel to EPUB extension (its Novel→EPUB tab, with this page pre-filled).
+  function openExtensionPopup() {
+    try { chrome.runtime.sendMessage({ type: "OPEN_POPUP", url: location.href }, () => void chrome.runtime.lastError); }
+    catch (_) { setStatus(RELOAD_MSG); }
   }
 
   // ================================================================= content pick

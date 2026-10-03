@@ -1195,8 +1195,8 @@ function loadWebWidgetPrefs() {
   try {
     store.get("webWidget", (o) => {
       const cfg = (o && o.webWidget) || {};
-      if ($("webEnabled")) $("webEnabled").checked = !!cfg.enabled;
-      if ($("webAuto")) $("webAuto").checked = !!cfg.autoTranslate;
+      if ($("webEnabled")) $("webEnabled").checked = cfg.enabled !== false; // default on
+      if ($("webAuto")) $("webAuto").checked = cfg.autoTranslate !== false; // default on
       if ($("webUnlockZoom")) $("webUnlockZoom").checked = cfg.unlockZoom !== false; // default on
       if ($("webLang") && cfg.targetLang) $("webLang").value = cfg.targetLang;
     });
