@@ -746,23 +746,11 @@
   // Present finished file(s) with a Save button; the tap handler saves synchronously so the
   // browser's download prompt actually appears. `pending` is normally a single file (a combined
   // EPUB, or a .zip of per-chapter EPUBs) so one tap = one download = one prompt.
-  function offerDownloads(pending, label) {
-    hideCrawlProgress();
-    if (!pending || !pending.length) { setStatus("Nothing to download."); return; }
-    const p = el("div", "wr-crawl");
-    const txt = label || (pending.length === 1 ? "File ready" : pending.length + " files ready");
-    p.innerHTML = `<div class="wr-crawl-text">✅ ${txt}</div><button class="wr-btn wr-primary wr-sm" data-crawl="save">⬇ Save</button><button class="wr-btn wr-sm" data-crawl="dismiss">✕</button>`;
-    W.root.appendChild(p);
-    p.querySelector('[data-crawl="save"]').addEventListener("click", () => {
-      let ok = 0; for (const d of pending) { if (saveBlob(d.blob, d.filename)) ok++; } // sync — stays in the gesture
-      setStatus(`Saved ${ok} file(s).`); p.remove();
-    });
-    p.querySelector('[data-crawl="dismiss"]').addEventListener("click", () => p.remove());
-  }
   // Build the finished download(s) from collected chapter data. combined → one EPUB; individual →
   // one .zip of per-chapter EPUBs (one file = one gesture download, reliable on mobile).
   async function buildPending(dataArr, output, novel) {
     if (!dataArr || !dataArr.length) return [];
+    dataArr = dataArr.slice().sort((a, b) => ((a.no != null ? a.no : a.seq) - (b.no != null ? b.no : b.seq))); // chapter order (retries append out of order)
     const { buildEpub, buildZip } = await import(chrome.runtime.getURL("epub.js"));
     const toImgs = (arr) => (arr || []).map((im) => (im.data ? im : { id: im.id, name: im.name, mime: im.mime, data: b64ToU8(im.b64) }));
     if (output === "combined") {
@@ -1576,19 +1564,22 @@
     d.querySelector('[data-toc="close"]').addEventListener("click", closeTocDrawer);
     const list = d.querySelector(".wr-ov-toc-list");
     let chapters = [];
-    try { chapters = await ensureChapterList(); } catch (e) { list.textContent = "Couldn't load the chapter list."; return; }
-    if (!chapters.length) { list.textContent = "No chapters found."; return; }
+    try { chapters = await ensureChapterList(); } catch (e) { chapters = []; }
     const curIdx = currentChapterIndex(chapters);
     const titleFor = (c, i) => (W.chapterTitlesEn && W.chapterTitlesEn[i]) || c.title || ("Chapter " + (c.no != null ? c.no : i + 1));
-    list.innerHTML = "";
-    chapters.forEach((c, i) => {
-      const row = el("label", "wr-ov-toc-row" + (i === curIdx ? " wr-current" : ""));
-      const cb = el("input"); cb.type = "checkbox"; cb.dataset.i = String(i);
-      const t = el("span", "wr-ov-toc-t"); t.textContent = titleFor(c, i);
-      t.addEventListener("click", (e) => { e.preventDefault(); goToChapterUrl(c.url); });
-      row.appendChild(cb); row.appendChild(t); list.appendChild(row);
-    });
-    const curRow = list.children[curIdx]; if (curRow) curRow.scrollIntoView({ block: "center" });
+    if (chapters.length) {
+      list.innerHTML = "";
+      chapters.forEach((c, i) => {
+        const row = el("label", "wr-ov-toc-row" + (i === curIdx ? " wr-current" : ""));
+        const cb = el("input"); cb.type = "checkbox"; cb.dataset.i = String(i);
+        const t = el("span", "wr-ov-toc-t"); t.textContent = titleFor(c, i);
+        t.addEventListener("click", (e) => { e.preventDefault(); goToChapterUrl(c.url); });
+        row.appendChild(cb); row.appendChild(t); list.appendChild(row);
+      });
+      const curRow = list.children[curIdx]; if (curRow) curRow.scrollIntoView({ block: "center" });
+    } else {
+      list.textContent = "No chapter list on this site — use “Download…” → “From here (follow Next)”.";
+    }
     const boxes = () => Array.from(list.querySelectorAll('input[type="checkbox"]'));
     d.querySelector('[data-toc="all"]').addEventListener("click", () => boxes().forEach((b) => (b.checked = true)));
     d.querySelector('[data-toc="none"]').addEventListener("click", () => boxes().forEach((b) => (b.checked = false)));
@@ -1627,10 +1618,11 @@
       <div class="wr-ov-toc-head"><span>Download chapters</span><button class="wr-icon" data-dl="close">✕</button></div>
       <div class="wr-dl-body">
         <label class="wr-dl-row">Which <select data-dl="scope">
-          <option value="selected">Selected (${preSel.length})</option>
+          ${chapters.length > 1 ? `<option value="selected">Selected (${preSel.length})</option>
           <option value="here">From here to the end</option>
           <option value="range">Range…</option>
-          <option value="all">All (${chapters.length})</option>
+          <option value="all">All (${chapters.length})</option>` : ""}
+          <option value="follow">From here (follow Next →)</option>
         </select></label>
         <div class="wr-dl-row wr-dl-range wr-hidden">From <input type="number" min="1" data-dl="from" value="${curNo}"> to <input type="number" min="1" data-dl="to" value="${lastNo}"></div>
         <label class="wr-dl-row">Output <select data-dl="output"><option value="individual">One file per chapter</option><option value="combined">One combined EPUB</option></select></label>
@@ -1661,158 +1653,214 @@
         idxs = chapters.map((c, i) => i).filter((i) => { const n = chapters[i].no != null ? chapters[i].no : i + 1; return n >= lo && n <= hi; });
       }
       idxs = [...new Set(idxs)].sort((a, b) => a - b);
-      if (!idxs.length) { note.textContent = "No chapters selected."; return; }
       const opts = {
+        scope,
         output: d.querySelector('[data-dl="output"]').value,
         lang: d.querySelector('[data-dl="lang"]').value,
-        mode: "tab", // background mode falls back to current tab for now
-        pageNav,
+        pageNav: scope === "follow" ? true : pageNav, // follow always drives the page
       };
+      if (scope !== "follow" && !idxs.length) { note.textContent = "No chapters selected."; return; }
       d.remove(); closeTocDrawer();
       startCrawl(chapters, idxs, opts);
     });
   }
 
-  // ---- Progress UI ----
-  function showCrawlProgress(done, total, label) {
-    let p = W.root && W.root.querySelector(".wr-crawl");
-    if (!p) {
-      p = el("div", "wr-crawl");
-      p.innerHTML = `<div class="wr-crawl-bar"><div class="wr-crawl-fill"></div></div><div class="wr-crawl-text"></div><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button>`;
-      W.root.appendChild(p);
-      p.querySelector('[data-crawl="cancel"]').addEventListener("click", cancelCrawl);
-    }
-    p.classList.remove("wr-hidden");
-    const pct = total ? Math.round((done / total) * 100) : 0;
-    p.querySelector(".wr-crawl-fill").style.width = pct + "%";
-    p.querySelector(".wr-crawl-text").textContent = `Downloading ${Math.min(done + 1, total)} / ${total}${label ? " — " + String(label).slice(0, 36) : ""}`;
-  }
-  function hideCrawlProgress() { const p = W.root && W.root.querySelector(".wr-crawl"); if (p) p.remove(); }
-  // Cancel must survive the per-chapter page reloads of the navigate engine, so set a
-  // persistent flag (checked at the top of resumeCrawl and before every navigation) in
-  // addition to the in-memory flag for the fetch engine / the current page.
-  function cancelCrawl() {
-    W._crawlCancel = true;
-    try { sessionStorage.setItem("wrCancel", "1"); } catch (_) {}
-    clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled.");
-  }
-  function cancelRequested() { try { return !!sessionStorage.getItem("wrCancel"); } catch (_) { return false; } }
-  function clearCancel() { try { sessionStorage.removeItem("wrCancel"); } catch (_) {} }
-
-  // ---- Combined-EPUB accumulator (survives page reloads for the navigate engine) ----
+  // ================= bulk download: panel, engines, per-chapter status + pause + retry =========
+  // sessionStorage: wrCrawl (control), wrCancel, wrPause. chrome.storage.local: wrCrawlChapters
+  // (built content for OK chapters), wrCrawlStatus (every attempt: {seq,no,title,url,ok}).
+  function myId() { try { return (chrome.runtime && chrome.runtime.id) || ""; } catch (_) { return ""; } }
   function clearCrawl() { try { sessionStorage.removeItem("wrCrawl"); } catch (_) {} }
   function getCrawlState() { try { return JSON.parse(sessionStorage.getItem("wrCrawl") || "null"); } catch (_) { return null; } }
-  function clearCrawlData() { return new Promise((res) => { try { chrome.storage.local.set({ wrCrawlChapters: [] }, res); } catch (_) { res(); } }); }
-  function appendCrawlData(entry) { return new Promise((res) => { try { chrome.storage.local.get("wrCrawlChapters", (o) => { const arr = (o && o.wrCrawlChapters) || []; arr.push(entry); chrome.storage.local.set({ wrCrawlChapters: arr }, res); }); } catch (_) { res(); } }); }
-  function loadCrawlData() { return new Promise((res) => { try { chrome.storage.local.get("wrCrawlChapters", (o) => res((o && o.wrCrawlChapters) || [])); } catch (_) { res([]); } }); }
+  function saveCrawl(st) { try { sessionStorage.setItem("wrCrawl", JSON.stringify(st)); } catch (_) {} }
+  function cancelRequested() { try { return !!sessionStorage.getItem("wrCancel"); } catch (_) { return false; } }
+  function clearCancel() { try { sessionStorage.removeItem("wrCancel"); } catch (_) {} }
+  function cancelCrawl() { W._crawlCancel = true; try { sessionStorage.setItem("wrCancel", "1"); } catch (_) {} clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); }
+  function pauseRequested() { try { return !!sessionStorage.getItem("wrPause"); } catch (_) { return false; } }
+  function setPause() { try { sessionStorage.setItem("wrPause", "1"); } catch (_) {} }
+  function clearPause() { try { sessionStorage.removeItem("wrPause"); } catch (_) {} }
+  const sgGet = (k) => new Promise((res) => { try { chrome.storage.local.get(k, (o) => res((o && o[k]) || [])); } catch (_) { res([]); } });
+  const sgSet = (k, v) => new Promise((res) => { try { chrome.storage.local.set({ [k]: v }, res); } catch (_) { res(); } });
+  function clearCrawlData() { return sgSet("wrCrawlChapters", []).then(() => sgSet("wrCrawlStatus", [])); }
+  function loadCrawlData() { return sgGet("wrCrawlChapters"); }
+  function loadCrawlStatus() { return sgGet("wrCrawlStatus"); }
+  async function upsertCrawlData(e) { const a = await sgGet("wrCrawlChapters"); const i = a.findIndex((x) => x.seq === e.seq); if (i >= 0) a[i] = e; else a.push(e); await sgSet("wrCrawlChapters", a); }
+  async function upsertCrawlStatus(e) { const a = await sgGet("wrCrawlStatus"); const i = a.findIndex((x) => x.seq === e.seq); if (i >= 0) a[i] = e; else a.push(e); await sgSet("wrCrawlStatus", a); }
+  function wantTranslateFor(lang) { return lang === "en" || (lang === "match" && ((W.translated && !W.showingOriginal) || CFG.autoTranslate)); }
 
-  function wantTranslateFor(lang) {
-    return lang === "en" || (lang === "match" && ((W.translated && !W.showingOriginal) || CFG.autoTranslate));
+  // ---- unified crawl panel ----
+  function crawlPanelEl() { let p = W.root && W.root.querySelector(".wr-crawl"); if (!p) { p = el("div", "wr-crawl"); if (W.root) W.root.appendChild(p); } p.classList.remove("wr-hidden"); return p; }
+  function hideCrawlProgress() { const p = W.root && W.root.querySelector(".wr-crawl"); if (p) p.remove(); }
+  function statusRowsHtml(status, withRetry) {
+    return status.map((s) => `<div class="wr-cr-row"><span class="wr-cr-ic ${s.ok ? "ok" : "fail"}">${s.ok ? "✓" : "✗"}</span><span class="wr-cr-t">${xesc(s.title || ("Chapter " + (s.no != null ? s.no : s.seq + 1)))}</span>${(withRetry && !s.ok) ? `<button class="wr-btn wr-sm" data-retry="${s.seq}">Retry</button>` : ""}</div>`).join("");
+  }
+  async function renderProgressPanel(info) { // {idx,total,title,paused}
+    const p = crawlPanelEl();
+    const status = await loadCrawlStatus();
+    const ok = status.filter((s) => s.ok).length, fail = status.length - ok;
+    const head = info.paused
+      ? `Paused — ${ok} done${fail ? `, ${fail} failed` : ""}`
+      : (info.total ? `Downloading ${Math.min(info.idx + 1, info.total)} / ${info.total}` : `Downloading ${info.idx + 1}`) + (fail ? ` · ${fail} failed` : "");
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext"></span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="${info.paused ? "resume" : "pause"}">${info.paused ? "Resume" : "Pause"}</button><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button></span></div><div class="wr-cr-list">${statusRowsHtml(status, false)}${info.paused ? "" : `<div class="wr-cr-row"><span class="wr-cr-ic">…</span><span class="wr-cr-t">${xesc(info.title || "")}</span></div>`}</div>`;
+    p.querySelector(".wr-cr-htext").textContent = head;
+    p.querySelector('[data-crawl="cancel"]').addEventListener("click", cancelCrawl);
+    const pb = p.querySelector('[data-crawl="pause"]'); if (pb) pb.addEventListener("click", () => { setPause(); pb.textContent = "Pausing…"; pb.disabled = true; setStatus("Pausing after this chapter…"); });
+    const rb = p.querySelector('[data-crawl="resume"]'); if (rb) rb.addEventListener("click", resumeFromPause);
+    const list = p.querySelector(".wr-cr-list"); if (list) list.scrollTop = list.scrollHeight;
+  }
+  async function renderResultsPanel(novel, opts, engine) {
+    const p = crawlPanelEl();
+    const status = await loadCrawlStatus();
+    const dataArr = await loadCrawlData();
+    const ok = status.filter((s) => s.ok).length, fail = status.length - ok;
+    let pending = [];
+    try { pending = dataArr.length ? await buildPending(dataArr, opts.output, novel) : []; } catch (e) { console.warn("[WebReader] build failed", e); }
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext">Done — ${ok} ok${fail ? `, ${fail} failed` : ""}</span><span class="wr-cr-btns"><button class="wr-btn wr-sm wr-primary" data-crawl="save" ${pending.length ? "" : "disabled"}>⬇ Save</button><button class="wr-btn wr-sm" data-crawl="close">✕</button></span></div><div class="wr-cr-list">${statusRowsHtml(status, true)}</div>`;
+    p.querySelector('[data-crawl="close"]').addEventListener("click", () => { p.remove(); clearCrawlData(); });
+    p.querySelector('[data-crawl="save"]').addEventListener("click", () => { let n = 0; for (const d of pending) { if (saveBlob(d.blob, d.filename)) n++; } setStatus(`Saved ${n} file(s).`); }); // sync in gesture; pending pre-built
+    p.querySelectorAll("[data-retry]").forEach((btn) => btn.addEventListener("click", () => retryChapter(+btn.dataset.retry, novel, opts, engine)));
+  }
+
+  // ---- wait for the chapter prose to actually render (not menus/ads/"Loading text") ----
+  async function waitForChapter() {
+    const needsVD = /(^|\.)(newtoki|booktoki|manatoki|mantoki)\d*\./i.test(location.hostname);
+    const isChapter = () => !needsVD || !!document.getElementById("theme-novel-viewer-data") || !!document.querySelector(".theme-novel-content");
+    const ready = () => { const host = document.querySelector(".theme-novel-content, #novel_content, .view-content"); if (host) { const sr = host.shadowRoot; const t = ((sr && sr.textContent) || host.textContent || "").replace(/\s+/g, " ").trim(); return t.length > 150 && !/Loading text|불러오는 중|로딩/i.test(t); } let b = []; try { b = pageReadableBlocks(); } catch (_) {} return b.length > 2; };
+    for (let tries = 0; tries < 80; tries++) {
+      if (isChapter() && ready()) return "ok";
+      if (cancelRequested() || W._crawlCancel) return "cancel";
+      if (/Access denied/i.test(document.title)) return "denied";
+      await sleep(500);
+    }
+    return "timeout";
+  }
+  // Scrape the current page into storage (data + status), keyed by seq (so a retry replaces it).
+  async function scrapeAndStore(seq, no, url, opts) {
+    let items = collectItems(pickContent());
+    if (wantTranslateFor(opts.lang)) { try { items = await translateItemsText(items); } catch (_) {} }
+    const title = currentChapterTitle() || ("Chapter " + (no != null ? no : seq + 1));
+    const { xhtmlBody, images } = await buildChapterParts(items, `c${seq}_`);
+    if (xhtmlBody) {
+      await upsertCrawlData({ seq, no, title, xhtmlBody, images: images.map((im) => ({ id: im.id, name: im.name, mime: im.mime, b64: u8ToB64(im.data) })), srcUrl: url });
+      await upsertCrawlStatus({ seq, no, title, url, ok: true });
+      return true;
+    }
+    await upsertCrawlStatus({ seq, no, title, url, ok: false });
+    return false;
   }
 
   async function startCrawl(chapters, idxs, opts) {
+    const novel = currentNovelTitle() || W.novelTitle || "Novel";
+    W._crawlCancel = false; clearCancel(); clearPause();
+    const owner = myId();
+    if (opts.scope === "follow") { // follow the site's own Next link from the current page (any site)
+      await clearCrawlData();
+      saveCrawl({ follow: true, idx: 0, opts, novel, owner, t: Date.now(), max: 5000 });
+      resumeCrawl(); return;
+    }
     const queue = idxs.map((i) => ({ url: chapters[i].url, no: chapters[i].no, title: chapters[i].title }));
     if (!queue.length) return;
-    const novel = currentNovelTitle() || W.novelTitle || "Novel"; // prefer the chapter page's (English) title
-    W._crawlCancel = false; clearCancel();
-    if (!opts.pageNav) return crawlFetch(queue, opts, novel);         // adapter sites: fetch loop (no reload)
-    const owner = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) || "";
-    const state = { queue, idx: 0, opts, novel, t: Date.now(), owner };  // newtoki: navigate-scrape, persisted
-    try { sessionStorage.setItem("wrCrawl", JSON.stringify(state)); } catch (_) {}
     await clearCrawlData();
-    showCrawlProgress(0, queue.length, queue[0].title);
+    if (!opts.pageNav) return crawlFetch(queue, opts, novel); // adapter sites: fetch loop (no reload)
+    saveCrawl({ queue, idx: 0, opts, novel, owner, t: Date.now() });
     if (stripQ(location.href) === stripQ(queue[0].url)) resumeCrawl();
     else location.assign(queue[0].url);
   }
 
-  // Adapter sites: fetch each chapter in place (fast, no navigation), accumulate, then offer Save.
+  // Adapter sites: fetch each chapter in place (fast, no navigation), store status, then results.
   async function crawlFetch(queue, opts, novel) {
-    showCrawlProgress(0, queue.length, queue[0].title);
-    const data = [];
     for (let i = 0; i < queue.length; i++) {
-      if (W._crawlCancel) { hideCrawlProgress(); setStatus("Download cancelled."); return; }
+      if (W._crawlCancel || cancelRequested()) { clearCancel(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
       const ch = queue[i];
-      showCrawlProgress(i, queue.length, ch.title);
+      await renderProgressPanel({ idx: i, total: queue.length, title: ch.title });
       let content = null;
       try { W.adapterUrl = null; W.adapterContent = undefined; content = await getAdapterContent(ch.url); } catch (_) {}
-      if (!content || !content.items || !content.items.length) continue;
-      const title = content.title || ch.title || ("Chapter " + (ch.no != null ? ch.no : i + 1));
-      const { xhtmlBody, images } = await buildChapterParts(content.items, `c${i}_`);
-      if (xhtmlBody) data.push({ title, xhtmlBody, images, srcUrl: ch.url });
+      const title = (content && content.title) || ch.title || ("Chapter " + (ch.no != null ? ch.no : i + 1));
+      if (content && content.items && content.items.length) {
+        const { xhtmlBody, images } = await buildChapterParts(content.items, `c${i}_`);
+        if (xhtmlBody) { await upsertCrawlData({ seq: i, no: ch.no, title, xhtmlBody, images, srcUrl: ch.url }); await upsertCrawlStatus({ seq: i, no: ch.no, title, url: ch.url, ok: true }); continue; }
+      }
+      await upsertCrawlStatus({ seq: i, no: ch.no, title, url: ch.url, ok: false });
     }
-    if (W._crawlCancel) { hideCrawlProgress(); setStatus("Download cancelled."); return; }
-    if (!data.length) { hideCrawlProgress(); setStatus("Nothing could be downloaded."); return; }
-    setStatus("Building EPUB…");
-    const pending = await buildPending(data, opts.output, novel);
-    offerDownloads(pending, `${data.length} chapter(s) ready`);
+    await renderResultsPanel(novel, opts, "fetch");
   }
 
-  // newtoki/pageNav: resume the navigate-scrape crawl after each page load.
+  // Retry a single failed chapter. nav → navigate+scrape (reload); fetch → re-fetch in place.
+  async function retryChapter(seq, novel, opts, engine) {
+    const status = await loadCrawlStatus();
+    const s = status.find((x) => x.seq === seq); if (!s) return;
+    if (engine === "fetch") {
+      setStatus("Retrying…");
+      let content = null;
+      try { W.adapterUrl = null; W.adapterContent = undefined; content = await getAdapterContent(s.url); } catch (_) {}
+      if (content && content.items && content.items.length) {
+        const { xhtmlBody, images } = await buildChapterParts(content.items, `c${seq}_`);
+        if (xhtmlBody) { await upsertCrawlData({ seq, no: s.no, title: content.title || s.title, xhtmlBody, images, srcUrl: s.url }); await upsertCrawlStatus({ seq, no: s.no, title: content.title || s.title, url: s.url, ok: true }); }
+      }
+      await renderResultsPanel(novel, opts, "fetch"); return;
+    }
+    W._crawlCancel = false; clearCancel();
+    saveCrawl({ retry: true, retrySeq: seq, retryNo: s.no, retryUrl: s.url, retryTitle: s.title, opts, novel, owner: myId(), t: Date.now() });
+    setStatus("Retrying…"); location.assign(s.url);
+  }
+
+  function resumeFromPause() {
+    const st = getCrawlState(); if (!st) return;
+    st.paused = false; clearPause(); saveCrawl(st);
+    if (st.follow) { const nu = (detectSiteChapterNav() || {}).nextUrl; if (nu && stripQ(nu) !== stripQ(location.href)) location.assign(nu); else finishNavCrawl(st); }
+    else if (st.queue && st.idx < st.queue.length) location.assign(st.queue[st.idx].url);
+    else finishNavCrawl(st);
+  }
+  async function finishNavCrawl(st) { clearCrawl(); await renderResultsPanel(st.novel, st.opts, "nav"); }
+
+  // newtoki/pageNav + follow: resume the navigate-scrape crawl after each page load.
   async function resumeCrawl() {
-    if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; } // cancelled during the last load
+    if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
     const st = getCrawlState();
     if (!st || (Date.now() - st.t) > 6 * 3600 * 1000) { clearCrawl(); return; }
-    // If several copies of the extension are installed, only the one that started the crawl
-    // should drive it — otherwise multiple content scripts fight over navigation/storage.
-    const myId = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id) || "";
-    if (st.owner && myId && st.owner !== myId) return;
+    if (st.owner && myId() && st.owner !== myId()) return; // another installed copy owns this crawl
     W._crawlCancel = false;
-    showCrawlProgress(st.idx, st.queue.length, st.queue[st.idx] && st.queue[st.idx].title);
-    // Only scrape a real chapter page (newtoki sometimes serves an ad/listing interstitial —
-    // never save that as a "chapter"). On newtoki a chapter always ships theme-novel-viewer-data.
-    const needsVD = /(^|\.)(newtoki|booktoki|manatoki|mantoki)\d*\./i.test(location.hostname);
-    const isChapter = () => !needsVD || !!document.getElementById("theme-novel-viewer-data") || !!document.querySelector(".theme-novel-content");
-    // Wait for the CHAPTER PROSE to actually render — not just "any blocks", which the page's
-    // menus/ads satisfy before the (async, shadow-DOM) chapter text loads. Scraping too early is
-    // why ch2+ came out empty and only the first (already-rendered) chapter had real text.
-    const contentReady = () => {
-      const host = document.querySelector(".theme-novel-content, #novel_content, .view-content");
-      if (host) { const sr = host.shadowRoot; const t = ((sr && sr.textContent) || host.textContent || "").replace(/\s+/g, " ").trim(); return t.length > 150 && !/Loading text|불러오는 중|로딩/i.test(t); }
-      let b = []; try { b = pageReadableBlocks(); } catch (_) {}
-      return b.length > 2;
-    };
-    let ready = false, tries = 0;
-    while (tries < 80) { // up to ~40s for the viewer to decrypt+render
-      if (isChapter() && contentReady()) { ready = true; break; }
-      if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
-      if (/Access denied/i.test(document.title)) {
-        if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
-        showCrawlProgress(st.idx, st.queue.length, "Blocked — retrying (check VPN)"); await sleep(5000);
-        if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
-        location.reload(); return;
-      }
-      await sleep(500); tries++;
+
+    // Retry of a single chapter (user tapped Retry on the results list).
+    if (st.retry) {
+      await renderProgressPanel({ idx: 0, total: 1, title: st.retryTitle });
+      const w = await waitForChapter();
+      if (w === "cancel") { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
+      if (w === "ok") await scrapeAndStore(st.retrySeq, st.retryNo, st.retryUrl, st.opts);
+      else await upsertCrawlStatus({ seq: st.retrySeq, no: st.retryNo, title: st.retryTitle, url: st.retryUrl, ok: false });
+      clearCrawl(); await renderResultsPanel(st.novel, st.opts, "nav"); return;
     }
-    const ch = st.queue[st.idx];
-    const novel = st.novel || currentNovelTitle();
-    // Scrape + accumulate this chapter (download happens once at the very end, so the per-chapter
-    // navigation can't cancel it and the save is one gesture → one browser download prompt).
-    if (ready) {
-      let items = collectItems(pickContent());
-      if (wantTranslateFor(st.opts.lang)) { try { items = await translateItemsText(items); } catch (_) {} } // translate the scraped text directly
-      const chapTitle = currentChapterTitle() || ch.title || ("Chapter " + (ch.no != null ? ch.no : st.idx + 1));
-      if (items.length) {
-        const { xhtmlBody, images } = await buildChapterParts(items, `c${st.idx}_`);
-        if (xhtmlBody) await appendCrawlData({ no: ch.no, title: chapTitle, xhtmlBody, images: images.map((im) => ({ id: im.id, name: im.name, mime: im.mime, b64: u8ToB64(im.data) })), srcUrl: ch.url });
-      }
+    // Sitting paused (reloaded while paused): just show the paused panel.
+    if (st.paused) { await renderProgressPanel({ idx: st.idx, total: st.queue ? st.queue.length : 0, paused: true }); return; }
+
+    const total = st.queue ? st.queue.length : 0;
+    const cur = st.queue ? st.queue[st.idx] : { url: location.href };
+    await renderProgressPanel({ idx: st.idx, total, title: cur && cur.title });
+    let w = await waitForChapter();
+    if (w === "cancel") { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+    if (w === "denied") {
+      st.deniedTries = (st.deniedTries || 0) + 1;
+      if (st.deniedTries <= 2 && !cancelRequested()) { saveCrawl(st); await renderProgressPanel({ idx: st.idx, total, title: "Blocked — retrying (check VPN)" }); await sleep(5000); if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; } location.reload(); return; }
+      w = "timeout"; // give up on this chapter
     }
+    st.deniedTries = 0;
+    if (w === "ok") await scrapeAndStore(st.idx, cur && cur.no, location.href, st.opts);
+    else await upsertCrawlStatus({ seq: st.idx, no: cur && cur.no, title: (cur && cur.title) || currentChapterTitle() || ("Chapter " + (st.idx + 1)), url: location.href, ok: false });
     if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
-    st.idx++;
-    if (st.idx < st.queue.length) {
-      showCrawlProgress(st.idx, st.queue.length, st.queue[st.idx] && st.queue[st.idx].title);
-      await sleep(500);
-      if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; } // re-check after the pause
-      try { sessionStorage.setItem("wrCrawl", JSON.stringify(st)); } catch (_) {}
-      location.assign(st.queue[st.idx].url);
-    } else {
-      clearCrawl();
-      hideCrawlProgress(); setStatus("Building EPUB…");
-      const dataArr = await loadCrawlData();
-      await clearCrawlData();
-      if (!dataArr.length) { setStatus("Nothing could be downloaded (no chapters rendered)."); return; }
-      const pending = await buildPending(dataArr, st.opts.output, novel);
-      offerDownloads(pending, `${dataArr.length} chapter(s) ready`);
-    }
+
+    // Decide the next chapter.
+    const nextIdx = st.idx + 1;
+    let nextUrl = null;
+    if (st.follow) { const nu = (detectSiteChapterNav() || {}).nextUrl; if (nu && stripQ(nu) !== stripQ(location.href) && nextIdx < (st.max || 5000)) nextUrl = nu; }
+    else if (st.queue && nextIdx < st.queue.length) nextUrl = st.queue[nextIdx].url;
+
+    if (!nextUrl) { await finishNavCrawl(st); return; } // finished → results
+
+    if (pauseRequested()) { clearPause(); st.idx = nextIdx; st.paused = true; saveCrawl(st); await renderProgressPanel({ idx: st.idx, total, paused: true }); return; }
+    st.idx = nextIdx; saveCrawl(st);
+    await renderProgressPanel({ idx: st.idx, total, title: st.queue ? (st.queue[st.idx] && st.queue[st.idx].title) : "" });
+    await sleep(500);
+    if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
+    location.assign(nextUrl);
   }
 
   async function openReaderOverlay() {

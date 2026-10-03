@@ -245,13 +245,19 @@
 #wr-root .wr-crawl {
   position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
   width: min(430px, calc(100vw - 24px)); z-index: 2147483647;
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-direction: column; gap: 8px;
   background: var(--wr-bg); border: 1px solid var(--wr-border); border-radius: 12px;
   box-shadow: 0 10px 30px rgba(0,0,0,.45); padding: 10px 12px;
 }
-#wr-root .wr-crawl-text { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
-#wr-root .wr-crawl-bar { position: relative; flex: 1; height: 6px; border-radius: 3px; background: var(--wr-border); overflow: hidden; }
-#wr-root .wr-crawl-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--wr-accent); transition: width .3s; }
+#wr-root .wr-cr-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#wr-root .wr-cr-htext { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+#wr-root .wr-cr-btns { display: inline-flex; gap: 6px; flex: none; }
+#wr-root .wr-cr-list { max-height: 38vh; overflow-y: auto; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; gap: 2px; }
+#wr-root .wr-cr-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 3px 2px; }
+#wr-root .wr-cr-ic { flex: none; width: 16px; text-align: center; }
+#wr-root .wr-cr-ic.ok { color: #46b561; }
+#wr-root .wr-cr-ic.fail { color: #e5675f; }
+#wr-root .wr-cr-t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #wr-root .wr-ov-tts {
   position: sticky; bottom: 0;
   background: var(--wr-bg2); border-top: 1px solid var(--wr-border);
