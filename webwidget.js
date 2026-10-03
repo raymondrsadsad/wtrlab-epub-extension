@@ -739,6 +739,18 @@
   function readerLang() {
     return ((W.translated && !W.showingOriginal) || CFG.autoTranslate) ? "en" : (document.documentElement.getAttribute("lang") || "en");
   }
+  // Translate the TEXT of scraped items directly (not the live DOM) — deterministic for the
+  // bulk crawl, where mutating + re-reading the page was racing and leaving chapters untranslated.
+  async function translateItemsText(items) {
+    const idxs = [], texts = [];
+    items.forEach((it, i) => { if (it.text) { idxs.push(i); texts.push(it.text); } });
+    if (!texts.length) return items;
+    let out;
+    try { out = await requestTranslate(texts, CFG.targetLang || "en", "auto"); } catch (_) { return items; }
+    const copy = items.map((x) => ({ ...x }));
+    idxs.forEach((bi, k) => { if (out[k]) copy[bi].text = out[k]; });
+    return copy;
+  }
   async function downloadCurrentChapter() {
     try {
       setStatus("Preparing chapter…");
@@ -1083,8 +1095,10 @@
   // backgrounded tab (screen off → speech dies). Playing a silent, looping <audio> at full
   // volume gives the page audio focus: that both surfaces the OS media controls (notification +
   // lock screen on Android) AND keeps the tab alive so speech keeps going with the screen off.
-  // The WAV is pure silence, so nothing is ever heard. All of this is gated on CFG.bgPlay.
-  const WR_SILENCE = "data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==";
+  // The WAV is a ~40 Hz tone at amplitude 4 — non-zero so Chrome counts it as *audible* media
+  // (pure digital silence is treated as silent and the notification is suppressed), but far too
+  // quiet/low to actually hear. All of this is gated on CFG.bgPlay.
+  const WR_SILENCE = "data:audio/wav;base64,UklGRmQfAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YUAfAACAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgICAgICAgICAgIGBgYGBgYGBgoKCgoKCgoKCgoODg4ODg4ODg4ODg4ODg4ODg4ODg4ODhIODg4ODg4ODg4ODg4ODg4ODg4ODg4ODgoKCgoKCgoKCgoGBgYGBgYGBgICAgICAgICAgICAgICAgIB/f39/f39/f35+fn5+fn5+fn59fX19fX19fX19fX19fX19fX19fX19fXx9fX19fX19fX19fX19fX19fX19fX19fX5+fn5+fn5+fn5/f39/f39/f4CAgICAgICAgICAgICAgICAgYGBgYGBgYGCgoKCgoKCgoKCg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OEg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4OCgoKCgoKCgoKCgYGBgYGBgYGAgICAgICAgICAgICAgICAgH9/f39/f39/fn5+fn5+fn5+fn19fX19fX19fX19fX19fX19fX19fX19fH19fX19fX19fX19fX19fX19fX19fX19fn5+fn5+fn5+fn9/f39/f39/gICAgICAgICAgICAgICAgICBgYGBgYGBgYKCgoKCgoKCgoKDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4SDg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4KCgoKCgoKCgoKBgYGBgYGBgYCAgICAgICAgICAgICAgICAf39/f39/f39+fn5+fn5+fn5+fX19fX19fX19fX19fX19fX19fX19fX18fX19fX19fX19fX19fX19fX19fX19fX1+fn5+fn5+fn5+f39/f39/f3+AgICAgICAgA==";
   function mediaKeepAlive(on) {
     try {
       if (on) {
@@ -1101,9 +1115,13 @@
       if (!("mediaSession" in navigator) || !("MediaMetadata" in window)) return;
       let icon = null;
       try { icon = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL("icons/icon128.png") : null; } catch (_) {}
+      // Prefer the reader's chapter/novel title; fall back to the page title.
+      let title = "", artist = location.hostname;
+      try { if (W.ttsHost === "overlay") { title = currentChapterTitle(); artist = currentNovelTitle() || location.hostname; } } catch (_) {}
+      if (!title) title = (document.title || "Web Reader").trim();
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: ((document.title || "Web Reader").trim()).slice(0, 140),
-        artist: location.hostname,
+        title: String(title).slice(0, 140),
+        artist: String(artist).slice(0, 120),
         album: "Web Reader",
         artwork: icon ? [{ src: icon, sizes: "128x128", type: "image/png" }] : [],
       });
@@ -1494,6 +1512,7 @@
         <button class="wr-btn wr-sm" data-toc="all">All</button>
         <button class="wr-btn wr-sm" data-toc="none">None</button>
         <button class="wr-btn wr-sm" data-toc="here">From here</button>
+        <button class="wr-btn wr-sm" data-toc="tr">🌐 Titles</button>
         <button class="wr-btn wr-sm wr-primary" data-toc="dl">⬇ Download…</button>
       </div>
       <div class="wr-ov-toc-list">Loading chapters…</div>`;
@@ -1504,11 +1523,12 @@
     try { chapters = await ensureChapterList(); } catch (e) { list.textContent = "Couldn't load the chapter list."; return; }
     if (!chapters.length) { list.textContent = "No chapters found."; return; }
     const curIdx = currentChapterIndex(chapters);
+    const titleFor = (c, i) => (W.chapterTitlesEn && W.chapterTitlesEn[i]) || c.title || ("Chapter " + (c.no != null ? c.no : i + 1));
     list.innerHTML = "";
     chapters.forEach((c, i) => {
       const row = el("label", "wr-ov-toc-row" + (i === curIdx ? " wr-current" : ""));
       const cb = el("input"); cb.type = "checkbox"; cb.dataset.i = String(i);
-      const t = el("span", "wr-ov-toc-t"); t.textContent = c.title || ("Chapter " + (c.no != null ? c.no : i + 1));
+      const t = el("span", "wr-ov-toc-t"); t.textContent = titleFor(c, i);
       t.addEventListener("click", (e) => { e.preventDefault(); goToChapterUrl(c.url); });
       row.appendChild(cb); row.appendChild(t); list.appendChild(row);
     });
@@ -1520,6 +1540,23 @@
     d.querySelector('[data-toc="dl"]').addEventListener("click", () => {
       const sel = boxes().filter((b) => b.checked).map((b) => +b.dataset.i);
       openDownloadDialog(chapters, curIdx, sel);
+    });
+    // Translate all chapter titles to English (cached on W, applied in place).
+    const trBtn = d.querySelector('[data-toc="tr"]');
+    trBtn.addEventListener("click", async () => {
+      if (W.chapterTitlesEn) { // toggle back to original
+        W.chapterTitlesEn = null;
+        list.querySelectorAll(".wr-ov-toc-t").forEach((t, i) => (t.textContent = chapters[i] ? titleFor(chapters[i], i) : t.textContent));
+        trBtn.textContent = "🌐 Titles"; return;
+      }
+      trBtn.disabled = true; trBtn.textContent = "Translating…";
+      try {
+        const out = await requestTranslate(chapters.map((c) => c.title || ""), CFG.targetLang || "en", "auto");
+        W.chapterTitlesEn = out;
+        list.querySelectorAll(".wr-ov-toc-t").forEach((t, i) => { if (out[i]) t.textContent = out[i]; });
+        trBtn.textContent = "🌐 Original";
+      } catch (e) { trBtn.textContent = "🌐 Titles"; setStatus("Couldn't translate titles."); }
+      finally { trBtn.disabled = false; }
     });
   }
 
@@ -1594,8 +1631,17 @@
     p.querySelector(".wr-crawl-fill").style.width = pct + "%";
     p.querySelector(".wr-crawl-text").textContent = `Downloading ${Math.min(done + 1, total)} / ${total}${label ? " — " + String(label).slice(0, 36) : ""}`;
   }
-  function hideCrawlProgress() { const p = W.root && W.root.querySelector(".wr-crawl"); if (p) p.classList.add("wr-hidden"); }
-  function cancelCrawl() { W._crawlCancel = true; clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); }
+  function hideCrawlProgress() { const p = W.root && W.root.querySelector(".wr-crawl"); if (p) p.remove(); }
+  // Cancel must survive the per-chapter page reloads of the navigate engine, so set a
+  // persistent flag (checked at the top of resumeCrawl and before every navigation) in
+  // addition to the in-memory flag for the fetch engine / the current page.
+  function cancelCrawl() {
+    W._crawlCancel = true;
+    try { sessionStorage.setItem("wrCancel", "1"); } catch (_) {}
+    clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled.");
+  }
+  function cancelRequested() { try { return !!sessionStorage.getItem("wrCancel"); } catch (_) { return false; } }
+  function clearCancel() { try { sessionStorage.removeItem("wrCancel"); } catch (_) {} }
 
   // ---- Combined-EPUB accumulator (survives page reloads for the navigate engine) ----
   function clearCrawl() { try { sessionStorage.removeItem("wrCrawl"); } catch (_) {} }
@@ -1620,7 +1666,7 @@
     const queue = idxs.map((i) => ({ url: chapters[i].url, no: chapters[i].no, title: chapters[i].title }));
     if (!queue.length) return;
     const novel = W.novelTitle || currentNovelTitle() || "Novel";
-    W._crawlCancel = false;
+    W._crawlCancel = false; clearCancel();
     if (!opts.pageNav) return crawlFetch(queue, opts, novel);         // adapter sites: fetch loop (no reload)
     const state = { queue, idx: 0, opts, novel, t: Date.now() };       // newtoki: navigate-scrape, persisted
     try { sessionStorage.setItem("wrCrawl", JSON.stringify(state)); } catch (_) {}
@@ -1658,6 +1704,7 @@
 
   // newtoki/pageNav: resume the navigate-scrape crawl after each page load.
   async function resumeCrawl() {
+    if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; } // cancelled during the last load
     const st = getCrawlState();
     if (!st || (Date.now() - st.t) > 6 * 3600 * 1000) { clearCrawl(); return; }
     W._crawlCancel = false;
@@ -1667,14 +1714,20 @@
     while (tries < 60) {
       try { blocks = pageReadableBlocks(); } catch (_) {}
       if (blocks.length > 2) break;
-      if (/Access denied/i.test(document.title)) { showCrawlProgress(st.idx, st.queue.length, "Blocked — retrying (check VPN)"); await sleep(5000); location.reload(); return; }
+      if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+      if (/Access denied/i.test(document.title)) {
+        if (cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); return; }
+        showCrawlProgress(st.idx, st.queue.length, "Blocked — retrying (check VPN)"); await sleep(5000);
+        if (cancelRequested() || W._crawlCancel) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+        location.reload(); return;
+      }
       await sleep(500); tries++;
     }
     const ch = st.queue[st.idx];
     const novel = st.novel || currentNovelTitle();
     if (blocks.length > 2) {
-      if (wantTranslateFor(st.opts.lang)) { try { await translateNewNodes(); } catch (_) {} }
-      const items = collectItems(pickContent());
+      let items = collectItems(pickContent());
+      if (wantTranslateFor(st.opts.lang)) { try { items = await translateItemsText(items); } catch (_) {} } // translate the scraped text directly
       const chapTitle = currentChapterTitle() || ch.title || ("Chapter " + (ch.no != null ? ch.no : st.idx + 1));
       if (items.length) {
         const { xhtmlBody, images } = await buildChapterParts(items, st.opts.output === "combined" ? `c${st.idx}_` : "");
@@ -1688,12 +1741,13 @@
         }
       }
     }
-    if (W._crawlCancel) { clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
+    if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; }
     st.idx++;
     if (st.idx < st.queue.length) {
-      try { sessionStorage.setItem("wrCrawl", JSON.stringify(st)); } catch (_) {}
       showCrawlProgress(st.idx, st.queue.length, st.queue[st.idx] && st.queue[st.idx].title);
       await sleep(500);
+      if (W._crawlCancel || cancelRequested()) { clearCancel(); clearCrawl(); hideCrawlProgress(); setStatus("Download cancelled."); return; } // re-check after the pause
+      try { sessionStorage.setItem("wrCrawl", JSON.stringify(st)); } catch (_) {}
       location.assign(st.queue[st.idx].url);
     } else {
       clearCrawl();
