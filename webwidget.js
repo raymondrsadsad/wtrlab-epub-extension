@@ -1690,6 +1690,13 @@
   // ---- unified crawl panel ----
   function crawlPanelEl() { let p = W.root && W.root.querySelector(".wr-crawl"); if (!p) { p = el("div", "wr-crawl"); if (W.root) W.root.appendChild(p); } p.classList.remove("wr-hidden"); return p; }
   function hideCrawlProgress() { const p = W.root && W.root.querySelector(".wr-crawl"); if (p) p.remove(); }
+  function crawlMin() { try { return !!sessionStorage.getItem("wrCrawlMin"); } catch (_) { return false; } }
+  function wireMin(p) { // minimize/expand the panel so it never blocks the page
+    const b = p.querySelector('[data-crawl="min"]'); if (!b) return;
+    const apply = () => { const m = crawlMin(); p.classList.toggle("wr-min", m); b.textContent = m ? "▣" : "—"; b.title = m ? "Expand" : "Minimize"; };
+    b.addEventListener("click", () => { try { crawlMin() ? sessionStorage.removeItem("wrCrawlMin") : sessionStorage.setItem("wrCrawlMin", "1"); } catch (_) {} apply(); });
+    apply();
+  }
   function statusRowsHtml(status, withRetry) {
     return status.map((s) => `<div class="wr-cr-row"><span class="wr-cr-ic ${s.ok ? "ok" : "fail"}">${s.ok ? "✓" : "✗"}</span><span class="wr-cr-t">${xesc(s.title || ("Chapter " + (s.no != null ? s.no : s.seq + 1)))}</span>${(withRetry && !s.ok) ? `<button class="wr-btn wr-sm" data-retry="${s.seq}">Retry</button>` : ""}</div>`).join("");
   }
@@ -1700,8 +1707,9 @@
     const head = info.paused
       ? `Paused — ${ok} done${fail ? `, ${fail} failed` : ""}`
       : (info.total ? `Downloading ${Math.min(info.idx + 1, info.total)} / ${info.total}` : `Downloading ${info.idx + 1}`) + (fail ? ` · ${fail} failed` : "");
-    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext"></span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="${info.paused ? "resume" : "pause"}">${info.paused ? "Resume" : "Pause"}</button><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button></span></div><div class="wr-cr-list">${statusRowsHtml(status, false)}${info.paused ? "" : `<div class="wr-cr-row"><span class="wr-cr-ic">…</span><span class="wr-cr-t">${xesc(info.title || "")}</span></div>`}</div>`;
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext"></span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="min">—</button><button class="wr-btn wr-sm" data-crawl="${info.paused ? "resume" : "pause"}">${info.paused ? "Resume" : "Pause"}</button><button class="wr-btn wr-sm" data-crawl="cancel">Cancel</button></span></div><div class="wr-cr-list">${statusRowsHtml(status, false)}${info.paused ? "" : `<div class="wr-cr-row"><span class="wr-cr-ic">…</span><span class="wr-cr-t">${xesc(info.title || "")}</span></div>`}</div>`;
     p.querySelector(".wr-cr-htext").textContent = head;
+    wireMin(p);
     p.querySelector('[data-crawl="cancel"]').addEventListener("click", cancelCrawl);
     const pb = p.querySelector('[data-crawl="pause"]'); if (pb) pb.addEventListener("click", () => { setPause(); pb.textContent = "Pausing…"; pb.disabled = true; setStatus("Pausing after this chapter…"); });
     const rb = p.querySelector('[data-crawl="resume"]'); if (rb) rb.addEventListener("click", resumeFromPause);
@@ -1714,7 +1722,8 @@
     const ok = status.filter((s) => s.ok).length, fail = status.length - ok;
     let pending = [];
     try { pending = dataArr.length ? await buildPending(dataArr, opts.output, novel) : []; } catch (e) { console.warn("[WebReader] build failed", e); }
-    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext">Done — ${ok} ok${fail ? `, ${fail} failed` : ""}</span><span class="wr-cr-btns"><button class="wr-btn wr-sm wr-primary" data-crawl="save" ${pending.length ? "" : "disabled"}>⬇ Save</button><button class="wr-btn wr-sm" data-crawl="close">✕</button></span></div><div class="wr-cr-list">${statusRowsHtml(status, true)}</div>`;
+    p.innerHTML = `<div class="wr-cr-head"><span class="wr-cr-htext">Done — ${ok} ok${fail ? `, ${fail} failed` : ""}</span><span class="wr-cr-btns"><button class="wr-btn wr-sm" data-crawl="min">—</button><button class="wr-btn wr-sm wr-primary" data-crawl="save" ${pending.length ? "" : "disabled"}>⬇ Save</button><button class="wr-btn wr-sm" data-crawl="close">✕</button></span></div><div class="wr-cr-list">${statusRowsHtml(status, true)}</div>`;
+    wireMin(p);
     p.querySelector('[data-crawl="close"]').addEventListener("click", () => { p.remove(); clearCrawlData(); });
     p.querySelector('[data-crawl="save"]').addEventListener("click", () => { let n = 0; for (const d of pending) { if (saveBlob(d.blob, d.filename)) n++; } setStatus(`Saved ${n} file(s).`); }); // sync in gesture; pending pre-built
     p.querySelectorAll("[data-retry]").forEach((btn) => btn.addEventListener("click", () => retryChapter(+btn.dataset.retry, novel, opts, engine)));
