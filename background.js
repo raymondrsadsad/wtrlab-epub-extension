@@ -40,6 +40,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return; // synchronous
   }
 
+  // Save a file via the browser's download manager (works independently of the page, so a
+  // bulk-download crawl navigating to the next chapter can't cancel it the way an in-page
+  // <a download> gets cancelled). `url` is a data: URL built in the content script.
+  if (msg.type === "WR_DOWNLOAD") {
+    try {
+      chrome.downloads.download({ url: msg.url, filename: msg.filename || "chapter.epub", conflictAction: "uniquify", saveAs: false }, (id) => {
+        if (chrome.runtime.lastError || id == null) sendResponse({ ok: false, error: (chrome.runtime.lastError && chrome.runtime.lastError.message) || "download failed" });
+        else sendResponse({ ok: true, id });
+      });
+    } catch (e) { sendResponse({ ok: false, error: (e && e.message) || String(e) }); }
+    return true; // async reply
+  }
+
   if (msg.type === "OPEN_IN_READER") {
     const url = msg.url || (sender.tab && sender.tab.url) || "";
     const q = url ? "?read=" + encodeURIComponent(url) : "";

@@ -731,10 +731,22 @@
     }
     return { xhtmlBody: parts.join("\n"), images };
   }
-  function downloadBlob(blob, filename) {
-    const a = el("a"); a.href = URL.createObjectURL(blob); a.download = filename;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 15000);
+  function blobToDataUrl(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); }); }
+  // Save via the service worker's download manager first — it runs independently of the page, so
+  // a bulk crawl navigating to the next chapter can't cancel the save (and mobile won't block
+  // repeated non-gesture downloads). Fall back to an in-page <a download> if the SW path fails.
+  async function downloadBlob(blob, filename) {
+    try {
+      const url = await blobToDataUrl(blob);
+      const ok = await new Promise((res) => { try { chrome.runtime.sendMessage({ type: "WR_DOWNLOAD", url, filename }, (r) => { if (chrome.runtime.lastError) return res(false); res(!!(r && r.ok)); }); } catch (_) { res(false); } });
+      if (ok) return true;
+    } catch (_) {}
+    try {
+      const a = el("a"); a.href = URL.createObjectURL(blob); a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => { try { URL.revokeObjectURL(a.href); } catch (_) {} }, 15000);
+      return true;
+    } catch (_) { return false; }
   }
   function readerLang() {
     return ((W.translated && !W.showingOriginal) || CFG.autoTranslate) ? "en" : (document.documentElement.getAttribute("lang") || "en");
@@ -764,7 +776,7 @@
       const meta = { title, author: novel || "", lang: readerLang() };
       const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
       const blob = buildEpub(meta, [{ title: chap, xhtmlBody, srcUrl: location.href }], images);
-      downloadBlob(blob, sanitizeFile(title) + ".epub");
+      await downloadBlob(blob, sanitizeFile(title) + ".epub");
       setStatus(`Downloaded “${title}”.`);
     } catch (e) {
       console.warn("[WebReader] chapter download failed", e);
@@ -1654,7 +1666,7 @@
     const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
     const chapters = data.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl }));
     const images = data.flatMap((c) => (c.images || []).map((im) => ({ id: im.id, name: im.name, mime: im.mime, data: b64ToU8(im.b64) })));
-    downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, chapters, images), sanitizeFile(novel) + ".epub");
+    await downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, chapters, images), sanitizeFile(novel) + ".epub");
     await clearCrawlData();
   }
 
@@ -1692,12 +1704,12 @@
       const { xhtmlBody, images } = await buildChapterParts(content.items, opts.output === "combined" ? `c${i}_` : "");
       if (!xhtmlBody) continue;
       if (opts.output === "individual") {
-        downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + title, author: novel, lang: "en" }, [{ title, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + title) + ".epub");
+        await downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + title, author: novel, lang: "en" }, [{ title, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + title) + ".epub");
         await sleep(150);
       } else collected.push({ title, xhtmlBody, images, srcUrl: ch.url });
     }
     if (opts.output === "combined" && collected.length) {
-      downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, collected.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl })), collected.flatMap((c) => c.images)), sanitizeFile(novel) + ".epub");
+      await downloadBlob(buildEpub({ title: novel, author: novel, lang: "en" }, collected.map((c) => ({ title: c.title, xhtmlBody: c.xhtmlBody, srcUrl: c.srcUrl })), collected.flatMap((c) => c.images)), sanitizeFile(novel) + ".epub");
     }
     hideCrawlProgress(); setStatus("Download complete.");
   }
@@ -1734,7 +1746,7 @@
         if (xhtmlBody) {
           if (st.opts.output === "individual") {
             const { buildEpub } = await import(chrome.runtime.getURL("epub.js"));
-            downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + chapTitle, author: novel, lang: wantTranslateFor(st.opts.lang) ? "en" : readerLang() }, [{ title: chapTitle, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + chapTitle) + ".epub");
+            await downloadBlob(buildEpub({ title: (novel ? novel + " " : "") + chapTitle, author: novel, lang: wantTranslateFor(st.opts.lang) ? "en" : readerLang() }, [{ title: chapTitle, xhtmlBody, srcUrl: ch.url }], images), sanitizeFile((novel ? novel + " " : "") + chapTitle) + ".epub");
           } else {
             await appendCrawlData({ title: chapTitle, xhtmlBody, images: images.map((im) => ({ id: im.id, name: im.name, mime: im.mime, b64: u8ToB64(im.data) })), srcUrl: ch.url });
           }
